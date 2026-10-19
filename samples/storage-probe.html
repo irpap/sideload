@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Storage Probe</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:20px;font:15px/1.5 -apple-system,system-ui,sans-serif;
+       background:#101318;color:#e8ebf1}
+  h1{font-size:18px;margin:0 0 4px}
+  p.sub{color:#98a1b0;font-size:13px;margin:0 0 18px}
+  .box{background:#181c23;border:1px solid #272d38;border-radius:11px;padding:14px;margin-bottom:12px}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#6d7686;margin:0 0 10px}
+  input,button{font:inherit;font-size:14px}
+  input{background:#101318;border:1px solid #2b323d;color:#e8ebf1;border-radius:8px;
+        padding:8px 10px;width:100%}
+  button{background:#2b6fe0;border:0;color:#fff;border-radius:8px;padding:9px 13px;
+         font-weight:600;cursor:pointer}
+  button.ghost{background:#242a34;color:#cdd4e0}
+  .row{display:flex;gap:8px;margin-bottom:8px}
+  .row input{flex:1}
+  .row button{flex:0 0 auto}
+  pre{margin:0;font:12px/1.5 ui-monospace,Menlo,monospace;color:#9fb7d8;
+      white-space:pre-wrap;overflow-wrap:anywhere}
+  .k{color:#5fd3a0}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td{padding:5px 0;border-top:1px solid #272d38;overflow-wrap:anywhere}
+  td:first-child{color:#98a1b0;width:40%}
+  .warn{color:#f0b429;font-size:12.5px;margin-top:8px}
+  .ok{color:#3fcf8e}
+</style>
+</head>
+<body>
+<h1>Storage Probe</h1>
+<p class="sub">Writes and reads deliberately generic keys, so two copies compiled under
+different storage keys prove they cannot see each other.</p>
+
+<div class="box">
+  <h2>Write</h2>
+  <div class="row">
+    <input id="k" placeholder="key" value="data" autocapitalize="none" spellcheck="false">
+    <input id="v" placeholder="value" autocapitalize="none" spellcheck="false">
+    <button id="set">Set</button>
+  </div>
+  <div class="row">
+    <button class="ghost" id="bump">Bump counter</button>
+    <button class="ghost" id="prop">Set via property</button>
+    <button class="ghost" id="clear">clear()</button>
+  </div>
+  <div class="warn" id="note"></div>
+</div>
+
+<div class="box">
+  <h2>What this app can see</h2>
+  <table id="dump"></table>
+</div>
+
+<div class="box">
+  <h2>Environment</h2>
+  <pre id="env"></pre>
+</div>
+
+<script>
+var $ = function(i){ return document.getElementById(i); };
+
+function render(){
+  var rows = '';
+  try {
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      rows += '<tr><td class="k">' + k + '</td><td>' +
+              String(localStorage.getItem(k)).slice(0, 80) + '</td></tr>';
+    }
+  } catch (e) {
+    rows = '<tr><td colspan="2" style="color:#ff6b6b">' + e.name + ': ' + e.message + '</td></tr>';
+  }
+  $('dump').innerHTML = rows ||
+    '<tr><td colspan="2" style="color:#6d7686">empty</td></tr>';
+
+  var lines = [];
+  try {
+    lines.push('localStorage.length   ' + localStorage.length);
+    lines.push('Object.keys(localStorage)  ' + JSON.stringify(Object.keys(localStorage)));
+  } catch (e) { lines.push('localStorage THREW  ' + e.name + ': ' + e.message); }
+  try {
+    sessionStorage.setItem('probe.session', '1');
+    lines.push('sessionStorage        ok (' + sessionStorage.length + ' keys)');
+  } catch (e) { lines.push('sessionStorage THREW  ' + e.name + ': ' + e.message); }
+  lines.push('origin                ' + location.origin);
+  lines.push('in iframe             ' + (window.parent !== window));
+  lines.push('standalone            ' + (navigator.standalone === true));
+  lines.push('window.claude         ' +
+             (window.claude ? ('present' + (window.claude.__sideload ? ' (sideload stand-in)' : '')) : 'absent'));
+  $('env').textContent = lines.join('\n');
+}
+
+$('set').onclick = function(){
+  try { localStorage.setItem($('k').value || 'data', $('v').value); $('note').textContent = ''; }
+  catch (e) { $('note').textContent = e.name + ': ' + e.message; }
+  render();
+};
+$('bump').onclick = function(){
+  var n = parseInt(localStorage.getItem('counter') || '0', 10) + 1;
+  localStorage.setItem('counter', n);
+  render();
+};
+$('prop').onclick = function(){
+  localStorage.viaProperty = 'set-at-' + new Date().toISOString().slice(11, 19);
+  render();
+};
+$('clear').onclick = function(){
+  if (confirm('Call localStorage.clear()? Another probe app’s data must survive this.')) {
+    localStorage.clear();
+    render();
+  }
+};
+
+/* Exercise the Claude runtime path the same way a real artifact would. */
+(async function(){
+  if (!window.claude || typeof window.claude.use !== 'function') return;
+  try {
+    var both = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+    var db = both[0], user = both[1];
+    if (!db || !user) return;
+    var id = await user.id();
+    var ref = db.doc('data/users/' + id + '/probe');
+    var snap = await ref.get();
+    var count = (snap.exists ? (snap.data().opens || 0) : 0) + 1;
+    await ref.set({ opens: count, lastId: id });
+    $('env').textContent += '\nclaude db             opened ' + count + ' time(s) as ' + id;
+    render();
+  } catch (e) {
+    $('env').textContent += '\nclaude db THREW       ' + e.message;
+  }
+})();
+
+render();
+</script>
+</body>
+</html>
