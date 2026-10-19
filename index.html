@@ -270,9 +270,9 @@ function recordApp(meta,payload){
  * ====================================================================== */
 var PRELUDE_BODY = `
 var NS = CFG.ns;
-function report(p){ try{ parent.postMessage({__sideload:1,payload:p}, CFG.origin); }catch(e){} }
+var PAYLOAD = location.hash.replace(/^#/,'');
 
-/* --- namespaced Storage ------------------------------------------------ */
+/* --- namespaced Storage ----------------------------------------------- */
 function wrap(real){
   function mine(){
     var out=[];
@@ -312,14 +312,20 @@ var installed=[];
 ['localStorage','sessionStorage'].forEach(function(name){
   var real;
   try{ real=window[name]; if(!real) return; real.length; }
-  catch(e){ report({kind:'storage-unavailable',name:name,message:String(e&&e.message||e)}); return; }
+  catch(e){
+    note('err','Storage blocked', name+' is unavailable: '+String(e&&e.message||e)+
+         '. Nothing this app saves will persist.');
+    return;
+  }
   var proxy=wrap(real), ok=false;
   try{
     Object.defineProperty(window,name,{value:proxy,configurable:true,writable:true});
     ok = window[name]===proxy;
   }catch(e){}
   if(!ok){ try{ delete window[name]; window[name]=proxy; ok=window[name]===proxy; }catch(e){} }
-  if(ok) installed.push(name); else report({kind:'shim-failed',name:name});
+  if(ok) installed.push(name);
+  else note('err','Storage isolation failed', name+' could not be namespaced, so this app '+
+            'may read or overwrite another sideloaded app data.');
 });
 
 /* --- Claude artifact-runtime stand-in --------------------------------- */
@@ -335,8 +341,7 @@ if(CFG.claudeShim && !window.claude){
       path:path,
       get:function(){ return Promise.resolve().then(function(){
         var v=read();
-        return { exists:v!==null, id:path.split('/').pop(),
-                 data:function(){ return v; } };
+        return { exists:v!==null, id:path.split('/').pop(), data:function(){ return v; } };
       }); },
       set:function(o){ return Promise.resolve().then(function(){ write(o); }); },
       update:function(o){ return Promise.resolve().then(function(){
@@ -365,35 +370,137 @@ if(CFG.claudeShim && !window.claude){
       return null;
     }); }
   };
-  report({kind:'claude-shim'});
 }
 
-/* --- surface failures instead of a blank screen ----------------------- */
+/* --- failures become a visible note, never a blank screen ------------- */
+var OV_CSS = ''
+ + '.box{padding:0 8px calc(8px + env(safe-area-inset-bottom));'
+ + 'font:13px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}'
+ + '.n{pointer-events:auto;background:#1b1f27;color:#f2f4f8;border:1px solid #333a46;'
+ + 'border-left:3px solid #f0b429;border-radius:10px;padding:10px 12px;margin-top:7px;'
+ + 'box-shadow:0 8px 28px rgba(0,0,0,.45);display:flex;gap:10px;align-items:flex-start}'
+ + '.n.err{border-left-color:#ff6b6b}'
+ + '.n .b{flex:1;min-width:0}'
+ + '.n b{display:block;font-size:13px;margin-bottom:2px}'
+ + '.n p{margin:0;color:#aeb6c4;font-size:12px;overflow-wrap:anywhere}'
+ + '.n pre{margin:5px 0 0;font:11px/1.4 ui-monospace,Menlo,monospace;color:#8e97a6;'
+ + 'white-space:pre-wrap;max-height:88px;overflow:auto}'
+ + '.n .x{-webkit-appearance:none;appearance:none;background:transparent;border:0;'
+ + 'color:#7d8696;font-size:17px;line-height:1;padding:0 2px;cursor:pointer}';
+
+var ovBox=null, pending=[], seenErr={}, resHosts=[], resNode=null;
+
+function ensureBox(){
+  if(ovBox) return ovBox;
+  if(!document.body) return null;
+  var host=document.createElement('div');
+  host.setAttribute('data-sideload','notes');
+  host.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;pointer-events:none';
+  document.body.appendChild(host);
+  /* shadow root so the app CSS cannot restyle or hide these */
+  var sr=host.attachShadow({mode:'open'});
+  sr.innerHTML='<style>'+OV_CSS+'</style><div class="box"></div>';
+  ovBox=sr.querySelector('.box');
+  return ovBox;
+}
+function paint(item){
+  var box=ensureBox(); if(!box) return null;
+  var n=document.createElement('div');
+  n.className='n'+(item.kind==='err'?' err':'');
+  var html='<div class="b"><b></b><p></p>'+(item.pre?'<pre></pre>':'')+'</div>'+
+           '<button class="x" aria-label="Dismiss">&times;</button>';
+  n.innerHTML=html;
+  n.querySelector('b').textContent=item.t;
+  n.querySelector('p').textContent=item.m;
+  if(item.pre) n.querySelector('pre').textContent=item.pre;
+  n.querySelector('.x').onclick=function(){ n.remove(); };
+  box.appendChild(n);
+  return n;
+}
+function flush(){
+  if(!document.body) return;
+  while(pending.length){ var it=pending.shift(); var el=paint(it); if(it.after) it.after(el); }
+}
+function note(kind,t,m,pre,after){
+  pending.push({kind:kind,t:t,m:m,pre:pre,after:after});
+  flush();
+}
+document.addEventListener('DOMContentLoaded',flush);
+window.addEventListener('load',flush);
+
 window.addEventListener('error',function(e){
   var t=e.target;
   if(t && t!==window && (t.src||t.href)){
-    report({kind:'resource', url:String(t.src||t.href), tag:String(t.tagName||'').toLowerCase()});
+    var u=String(t.src||t.href), h;
+    try{ h=new URL(u,location.href).host; }catch(_){ h=u; }
+    if(resHosts.indexOf(h)<0) resHosts.push(h);
+    var msg=resHosts.join(', ')+' could not be reached, so fonts or styles may look wrong. '+
+            'This app needs a network connection for them.';
+    if(resNode){ var pp=resNode.querySelector('p'); if(pp) pp.textContent=msg; }
+    else note('','Offline resources',msg,null,function(el){ resNode=el; });
     return;
   }
-  report({kind:'error', message:e.message, src:e.filename, line:e.lineno, col:e.colno,
-          stack:(e.error&&e.error.stack)||''});
+  var key=String(e.message)+'@'+e.lineno+':'+e.colno;
+  if(seenErr[key]) return; seenErr[key]=1;
+  var where=e.lineno?(' (line '+e.lineno+(e.colno?', col '+e.colno:'')+')'):'';
+  note('err','App error', String(e.message||'Unknown error')+where,
+       (e.error&&e.error.stack)?String(e.error.stack).slice(0,700):null);
 },true);
+
 window.addEventListener('unhandledrejection',function(e){
   var r=e.reason;
-  report({kind:'error', message:'Unhandled promise rejection: '+String((r&&r.message)||r),
-          stack:(r&&r.stack)||''});
+  var key='rej:'+String(r&&r.message||r);
+  if(seenErr[key]) return; seenErr[key]=1;
+  note('err','Unhandled promise rejection', String((r&&r.message)||r),
+       (r&&r.stack)?String(r.stack).slice(0,700):null);
 });
 
-/* --- keep outbound links from replacing the app ----------------------- */
+/* --- navigation guards ------------------------------------------------ */
 document.addEventListener('click',function(e){
   var n=e.target;
   var a=(n && n.closest) ? n.closest('a[href]') : null;
   if(!a) return;
   var h=a.getAttribute('href')||'';
-  if(/^https?:/i.test(h) && !a.target){ a.target='_blank'; a.rel='noopener noreferrer'; }
+  if(/^https?:/i.test(h)){
+    /* leaving would discard the app, which lives only in this URL */
+    if(!a.target){ a.target='_blank'; a.rel='noopener noreferrer'; }
+    return;
+  }
+  if(CFG.direct && h.charAt(0)==='#'){
+    /* an in-page anchor would overwrite the payload fragment and lose the
+       app for good, so scroll by hand instead of letting the hash change */
+    e.preventDefault();
+    var id=h.slice(1);
+    if(!id){ window.scrollTo(0,0); return; }
+    var t=document.getElementById(id)||document.getElementsByName(id)[0];
+    if(t && t.scrollIntoView) t.scrollIntoView({behavior:'smooth',block:'start'});
+  }
 },true);
 
-report({kind:'ready', installed:installed});
+/* last resort: something still clobbered the fragment, so put it back */
+if(CFG.direct && PAYLOAD){
+  window.addEventListener('hashchange',function(){
+    if(location.hash.replace(/^#/,'')!==PAYLOAD){
+      try{ history.replaceState(null,'','#'+PAYLOAD); }catch(e){}
+    }
+  });
+}
+
+/* --- let sliders own their own drag ----------------------------------- */
+/* Without this a horizontal drag on a native range input is resolved as a
+   page pan and the value never changes. Appended late so it wins on equal
+   specificity; no !important, so an app that sets touch-action still does. */
+(function(){
+  function addFix(){
+    if(!document.head && !document.body) return;
+    var st=document.createElement('style');
+    st.setAttribute('data-sideload','touch');
+    st.textContent='input[type=range]{touch-action:none}';
+    (document.head||document.body).appendChild(st);
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',addFix);
+  else addFix();
+})();
 `;
 
 function buildPrelude(slug, opts){
@@ -401,7 +508,8 @@ function buildPrelude(slug, opts){
     ns: NS_PREFIX + slug + ':',
     slug: slug,
     origin: location.origin,
-    claudeShim: !!opts.claudeShim
+    claudeShim: !!opts.claudeShim,
+    direct: !!opts.direct
   });
   return '<scr'+'ipt>(function(){var CFG='+cfg+';\n'+PRELUDE_BODY+'\n})();<\/scr'+'ipt>';
 }
@@ -471,93 +579,58 @@ function runApp(payload){
 
     var title = (meta.title||'').trim() || guessTitle(meta.html) || 'app';
     var slug  = meta.slug || slugify(title);
+    var icon=''; try{ icon = makeIcon(title,slug); }catch(e){}
+    var framed = meta.frame===true;
 
-    /* Per-app identity, read by iOS at Add-to-Home-Screen time. */
-    document.title = title;
-    setMetaTag('apple-mobile-web-app-title', title);
-    try{ setTouchIcon(makeIcon(title,slug)); }catch(e){}
-
-    document.body.className = 'runner';
-    $('root').innerHTML = '';
-
-    var frame=document.createElement('iframe');
-    frame.id='stage';
-    frame.setAttribute('allow','clipboard-write; clipboard-read; fullscreen; camera; microphone; geolocation');
-    frame.setAttribute('title', title);
-    /* NO sandbox attribute on purpose: a sandbox without allow-same-origin
-       forces an opaque origin, and localStorage then throws SecurityError.
-       Same-origin is what makes stateful apps work at all. */
-    frame.srcdoc = injectPrelude(meta.html, buildPrelude(slug,{claudeShim: meta.claudeShim!==false}));
-    document.body.appendChild(frame);
-
-    installOverlay();
     try{ recordApp({title:title,slug:slug}, payload); }catch(e){}
+
+    /* Everything iOS reads at Add-to-Home-Screen time has to live in the
+       document that is actually on screen, so inject it alongside the
+       prelude rather than relying on this page's own <head>. */
+    var inject = buildPrelude(slug,{claudeShim: meta.claudeShim!==false, direct: !framed})
+      + '<meta name="apple-mobile-web-app-capable" content="yes">'
+      + '<meta name="mobile-web-app-capable" content="yes">'
+      + '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+      + '<meta name="apple-mobile-web-app-title" content="'+esc(title)+'">'
+      + (icon ? '<link rel="apple-touch-icon" sizes="180x180" href="'+icon+'">' : '')
+      + (guessTitle(meta.html) ? '' : '<title>'+esc(title)+'</title>');
+
+    var doc = injectPrelude(meta.html, inject);
+
+    if(framed){
+      /* Opt-in isolation. Only worth it for an app that drives its own
+         location.hash, which would otherwise overwrite the payload. */
+      document.title = title;
+      setMetaTag('apple-mobile-web-app-title', title);
+      if(icon) setTouchIcon(icon);
+      document.body.className = 'runner';
+      $('root').innerHTML = '';
+      var frame=document.createElement('iframe');
+      frame.id='stage';
+      frame.setAttribute('allow','clipboard-write; clipboard-read; fullscreen; camera; microphone; geolocation');
+      frame.setAttribute('title', title);
+      /* no sandbox attribute: a sandbox without allow-same-origin forces an
+         opaque origin, where localStorage throws SecurityError */
+      frame.srcdoc = doc;
+      document.body.appendChild(frame);
+      return;
+    }
+
+    /* Default: become the app. No iframe means no nested scroll container,
+       so touch gestures, momentum scrolling, viewport units and safe-area
+       insets are all handled natively -- a drag on a slider is not resolved
+       as a pan of the frame. Same origin and same URL, so storage still
+       works and the fragment survives for Add to Home Screen. */
+    document.title = title;
+    document.open();
+    document.write(doc);
+    document.close();
+
   }).catch(function(err){
     var extra='';
     if(payload.length>=BUDGET-200)
       extra=' The link is '+fmtNum(payload.length)+' characters, right at the limit — it may have been truncated when it was saved or shared.';
     fatal('Could not open this link', (err&&err.message||String(err))+extra);
-  });
-}
-
-function installOverlay(){
-  var box=document.createElement('div'); box.id='errs';
-  document.body.appendChild(box);
-  var seen={}, resources=[], resNote=null;
-
-  function note(cls, titleText, bodyHtml){
-    var n=document.createElement('div');
-    n.className='note'+(cls?' '+cls:'');
-    n.innerHTML='<div class="body"><b>'+esc(titleText)+'</b>'+bodyHtml+'</div>'+
-                '<button class="x" aria-label="Dismiss">&times;</button>';
-    n.querySelector('.x').onclick=function(){ n.remove(); };
-    box.appendChild(n);
-    return n;
-  }
-
-  window.addEventListener('message',function(ev){
-    if(ev.origin!==location.origin) return;
-    var d=ev.data;
-    if(!d || d.__sideload!==1 || !d.payload) return;
-    var p=d.payload;
-
-    if(p.kind==='resource'){
-      var host; try{ host=new URL(p.url).host; }catch(e){ host=p.url; }
-      if(resources.indexOf(host)<0) resources.push(host);
-      var txt='<p>'+esc(resources.join(', '))+' could not be reached, so fonts or styles may look wrong. '+
-              'This app needs a network connection for them.</p>';
-      if(resNote) resNote.querySelector('p').outerHTML=txt;
-      else resNote=note('', 'Offline resources', txt);
-      return;
-    }
-
-    if(p.kind==='shim-failed'){
-      note('err','Storage isolation failed',
-        '<p>'+esc(p.name)+' could not be namespaced, so this app may read or overwrite another '+
-        'sideloaded app’s data. Please report this.</p>');
-      return;
-    }
-
-    if(p.kind==='storage-unavailable'){
-      note('err','Storage blocked',
-        '<p>'+esc(p.name)+' is unavailable: '+esc(p.message)+'. Nothing this app saves will persist.</p>');
-      return;
-    }
-
-    if(p.kind==='error'){
-      var key=(p.message||'')+'@'+(p.line||0)+':'+(p.col||0);
-      if(seen[key]) return; seen[key]=1;
-      var where = p.line ? ' (line '+p.line+(p.col?', col '+p.col:'')+')' : '';
-      var body='<p>'+esc(p.message||'Unknown error')+esc(where)+'</p>'+
-               (p.stack?'<pre>'+esc(String(p.stack).slice(0,700))+'</pre>':'')+
-               '<p style="margin-top:7px"><button class="cp">Copy details</button></p>';
-      var n=note('err','App error', body);
-      n.querySelector('.cp').onclick=function(){
-        var t=(p.message||'')+where+'\n'+(p.stack||'');
-        if(navigator.clipboard) navigator.clipboard.writeText(t);
-        this.textContent='Copied';
-      };
-    }
   });
 }
 
@@ -600,6 +673,13 @@ function compilerHTML(){
         '<label for="claudeShim" style="margin:0">Stand in for the Claude artifact runtime'+
           '<span>Gives the app a local <code>window.claude</code> so its sync code saves to this device '+
           'instead of failing. Leave on unless the app misbehaves.</span></label>'+
+      '</div>'+
+      '<div class="sw">'+
+        '<input type="checkbox" id="frame">'+
+        '<label for="frame" style="margin:0">Run in an isolated frame'+
+          '<span>Off is better: the app owns the real viewport, so sliders and scrolling '+
+          'feel native. Turn it on only if the app drives its own <code>location.hash</code>, '+
+          'which would otherwise overwrite the link.</span></label>'+
       '</div>'+
     '</div>'+
 
@@ -743,6 +823,7 @@ function renderApps(){
       decodePayload(a.payload).then(function(m){
         $('src').value=m.html; $('title').value=m.title||''; $('slug').value=m.slug||'';
         if($('claudeShim')) $('claudeShim').checked = m.claudeShim!==false;
+        if($('frame')) $('frame').checked = m.frame===true;
         recompute(); window.scrollTo(0,0); toast('Loaded into the editor');
       }).catch(function(err){ toast('Could not decode that entry'); });
     }
@@ -789,7 +870,7 @@ function recompute(){
     renderMeter(); setActions(false);
     return;
   }
-  var meta={v:1, title:title||'Untitled app', slug:slug, html:html, claudeShim:$('claudeShim').checked};
+  var meta={v:1, title:title||'Untitled app', slug:slug, html:html, claudeShim:$('claudeShim').checked, frame:$('frame').checked};
   var raw=te.encode(html).length;
   encodePayload(meta).then(function(payload){
     if($('src').value!==html) return;              /* stale */
@@ -875,6 +956,7 @@ function showCompiler(){
   $('title').addEventListener('input', scheduleRecompute);
   $('slug').addEventListener('input', function(){ this.dataset.touched='1'; scheduleRecompute(); });
   $('claudeShim').addEventListener('change', scheduleRecompute);
+  $('frame').addEventListener('change', scheduleRecompute);
 
   /* drag & drop onto the textarea or the page */
   ['dragenter','dragover'].forEach(function(ev){
@@ -937,10 +1019,13 @@ function boot(){
     return;
   }
   var h=location.hash.replace(/^#/,'');
-  if(h) runApp(h); else showCompiler();
+  if(h){ runApp(h); return; }
+  showCompiler();
+  /* Only in compiler mode: picking an app changes the fragment, and a reload
+     is the cleanest way in. The runner must NOT do this -- it would reload
+     on any in-app hash change, after the payload had already been lost. */
+  window.addEventListener('hashchange', function(){ location.reload(); });
 }
-/* A fragment change means a different app entirely; reload for clean state. */
-window.addEventListener('hashchange', function(){ location.reload(); });
 boot();
 })();
 </script>
