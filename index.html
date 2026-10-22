@@ -36,12 +36,6 @@ body{
   -webkit-text-size-adjust:100%;
   padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
-/* ---------- runner ---------- */
-body.runner{padding:0;overflow:hidden;background:#000}
-body.runner #stage{
-  position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;
-  border:0;margin:0;display:block;background:#fff
-}
 /* ---------- compiler ---------- */
 .wrap{max-width:720px;margin:0 auto;padding:22px 16px 64px}
 header{margin:6px 0 22px}
@@ -250,7 +244,7 @@ function decodeVerified(payload){
     if(dash < 0) throw new Error('Malformed link: no version prefix.');
     var v = payload.slice(0, dash);
     if(v !== VERSION)
-      throw new Error('This link uses sideload format "'+v+'", but this instance speaks "'+VERSION+'".');
+      throw new Error('This link uses sideload format "'+v+'", but this site reads format "'+VERSION+'".');
     var rest = payload.slice(dash+1), dot = rest.indexOf('.');
     if(dot < 0) throw new Error('Malformed link: missing signature.');
     if(!PUBLIC_KEY) throw new Error('UNCONFIGURED');
@@ -545,7 +539,7 @@ document.addEventListener('click',function(e){
     if(!a.target){ a.target='_blank'; a.rel='noopener noreferrer'; }
     return;
   }
-  if(CFG.direct && h.charAt(0)==='#'){
+  if(h.charAt(0)==='#'){
     /* A link to #something would replace the payload and lose the app, so
        scroll to the target instead of letting the # change. */
     e.preventDefault();
@@ -557,7 +551,7 @@ document.addEventListener('click',function(e){
 },true);
 
 /* Fallback: if something changed the # anyway, put the payload back. */
-if(CFG.direct && PAYLOAD){
+if(PAYLOAD){
   window.addEventListener('hashchange',function(){
     if(location.hash.replace(/^#/,'')!==PAYLOAD){
       try{ history.replaceState(null,'','#'+PAYLOAD); }catch(e){}
@@ -587,8 +581,7 @@ function buildPrelude(slug, opts){
     ns: NS_PREFIX + slug + ':',
     slug: slug,
     origin: location.origin,
-    claudeShim: !!opts.claudeShim,
-    direct: !!opts.direct
+    claudeShim: !!opts.claudeShim
   });
   return '<scr'+'ipt>(function(){var CFG='+cfg+';\n'+PRELUDE_BODY+'\n})();<\/scr'+'ipt>';
 }
@@ -619,7 +612,6 @@ function analyze(html){
   return {
     hosts: order, hostCount: hosts, extCount: ext.length,
     storage: /\b(?:local|session)Storage\b/.test(html),
-    hashRouting: /location\s*\.\s*hash\s*=|history\s*\.\s*(?:push|replace)State/.test(html),
     claude:  /\bwindow\.claude\b|\bclaude\s*\.\s*use\s*\(/.test(html),
     modules: /type\s*=\s*["']module["']/i.test(html),
     dataImgs:(html.match(/data:image\/[a-z+.-]+;base64/gi)||[]).length
@@ -636,22 +628,6 @@ function fatal(title, detail){
     '<p>'+esc(detail||'')+'</p>'+
     '<p><a class="btn" href="'+esc(baseUrl())+'">Open the compiler</a></p></div>';
 }
-function setMetaTag(name, content){
-  var el=document.querySelector('meta[name="'+name+'"]');
-  if(!el){ el=document.createElement('meta'); el.setAttribute('name',name); document.head.appendChild(el); }
-  el.setAttribute('content', content);
-}
-function setTouchIcon(href){
-  var links=document.querySelectorAll('link[rel="apple-touch-icon"],link[rel="icon"]');
-  for(var i=0;i<links.length;i++) links[i].parentNode.removeChild(links[i]);
-  [['apple-touch-icon','180x180'],['icon','']].forEach(function(p){
-    var l=document.createElement('link');
-    l.setAttribute('rel',p[0]);
-    if(p[1]) l.setAttribute('sizes',p[1]);
-    l.setAttribute('href',href);
-    document.head.appendChild(l);
-  });
-}
 
 function runApp(payload){
   decodeVerified(payload).then(function(meta){
@@ -660,14 +636,13 @@ function runApp(payload){
     var title = (meta.title||'').trim() || guessTitle(meta.html) || 'app';
     var slug  = meta.slug || slugify(title);
     var icon=''; try{ icon = makeIcon(title,slug); }catch(e){}
-    var framed = meta.frame===true;
 
     try{ recordApp({title:title,slug:slug}, payload); }catch(e){}
 
     /* iOS reads these when you tap Add to Home Screen, and it reads them from
        the document on screen. document.write replaces our own <head>, so put
        them into the app's HTML instead. */
-    var inject = buildPrelude(slug,{claudeShim: meta.claudeShim!==false, direct: !framed})
+    var inject = buildPrelude(slug,{claudeShim: meta.claudeShim!==false})
       + '<meta name="apple-mobile-web-app-capable" content="yes">'
       + '<meta name="mobile-web-app-capable" content="yes">'
       + '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
@@ -677,31 +652,11 @@ function runApp(payload){
 
     var doc = injectPrelude(meta.html, inject);
 
-    if(framed){
-      /* Optional iframe mode. Only needed for an app that sets location.hash
-         itself, which would otherwise overwrite the payload. */
-      document.title = title;
-      setMetaTag('apple-mobile-web-app-title', title);
-      if(icon) setTouchIcon(icon);
-      document.body.className = 'runner';
-      $('root').innerHTML = '';
-      var frame=document.createElement('iframe');
-      frame.id='stage';
-      frame.setAttribute('allow','clipboard-write; clipboard-read; fullscreen; camera; microphone; geolocation');
-      frame.setAttribute('title', title);
-      /* No sandbox attribute, deliberately. A sandbox without allow-same-origin
-         gives the frame an opaque origin, and localStorage throws SecurityError
-         there, so any app that saves data breaks. */
-      frame.srcdoc = doc;
-      document.body.appendChild(frame);
-      return;
-    }
-
-    /* Default path: replace this page with the app. Without an iframe there is
-       no second scrollable layer, so touch, scrolling, viewport units and
-       safe-area insets all behave normally, and dragging a slider no longer
-       scrolls the page instead. The address does not change, so storage keeps
-       working and Add to Home Screen still captures the payload. */
+    /* Replace this page with the app. There is no iframe, so no second
+       scrollable layer: touch, scrolling, viewport units and safe-area insets
+       all behave normally, and dragging a slider does not scroll the page.
+       The address stays the same, so storage keeps working and Add to Home
+       Screen still captures the payload. */
     document.title = title;
     document.open();
     document.write(doc);
@@ -711,16 +666,16 @@ function runApp(payload){
     var m = (err && err.message) || String(err);
 
     if(m === 'BADSIG'){
-      fatal('Refused: this link is not signed by this instance',
-        'sideload only runs apps signed with this instance\u2019s private key. This one was not \u2014 it may have '+
-        'been tampered with, built on someone else\u2019s instance, or crafted by someone who wants your saved data. '+
+      fatal('Refused: this link is not signed by your key',
+        'This site only runs apps signed with your own private key. This link was not \u2014 it may have been '+
+        'altered, built on someone else\u2019s site, or made by someone after your saved data. '+
         'Nothing in it has been run.');
       return;
     }
     if(m === 'UNCONFIGURED'){
-      fatal('This instance has no signing key',
-        'No public key is configured in this deployment, so nothing can be verified and nothing will run. '+
-        'Open the compiler and create a key, then follow the setup steps in the README.');
+      fatal('This site has no signing key',
+        'No public key is set, so nothing can be verified and nothing will run. Open the compiler, '+
+        'create a key, and follow the setup steps in the README.');
       return;
     }
     var extra='';
@@ -763,7 +718,6 @@ function compilerHTML(){
       '<div class="actions">'+
         '<button class="btn sm" id="pasteBtn">Paste from clipboard</button>'+
         '<button class="btn sm" id="fileBtn">Choose .html file&hellip;</button>'+
-        '<button class="btn sm" id="copyHtmlBtn">Copy HTML</button>'+
         '<button class="btn sm" id="clearBtn">Clear</button>'+
         '<input type="file" id="file" accept=".html,.htm,text/html" hidden>'+
       '</div>'+
@@ -774,18 +728,8 @@ function compilerHTML(){
       '<div class="row">'+
         '<div><label for="title">App name (names the home-screen icon)</label>'+
           '<input type="text" id="title" placeholder="My Budget Planner" autocapitalize="words"></div>'+
-        '<div><label for="slug">Storage key (keep this stable across updates)</label>'+
+        '<div><label for="slug">Data name (keep the same when you update)</label>'+
           '<input type="text" id="slug" placeholder="my-budget-planner" autocapitalize="none" spellcheck="false"></input></div>'+
-      '</div>'+
-      '<div class="hint" id="nsHint"></div>'+
-      /* Only shown when the pasted app actually changes location.hash itself,
-         which is the one situation where an iframe is the lesser evil. */
-      '<div class="sw" id="frameRow" hidden>'+
-        '<input type="checkbox" id="frame">'+
-        '<label for="frame">Run this app in a frame'+
-          '<span>This app changes the <code>#</code> part of the address itself, which would '+
-          'overwrite its own link. Running it in a frame keeps the link intact, but sliders '+
-          'and scrolling will feel worse.</span></label>'+
       '</div>'+
     '</div>'+
 
@@ -831,18 +775,18 @@ function compilerHTML(){
       'your data stay on your device. This page checks the signature, then runs the app.</p>'+
       '<ul>'+
         '<li><b>Budget.</b> About '+fmtNum(BUDGET)+' URL characters, roughly 150&ndash;200&nbsp;KB of HTML after compression. '+
-          'An embedded image will blow past it; plain markup, CSS and JS compress ~4&times;.</li>'+
-        '<li><b>Needs iOS 16.4+</b> for <code>CompressionStream</code>.</li>'+
-        '<li><b>Storage is per-device and per-app.</b> Keys are namespaced by the storage key above, so '+
-          'two apps can both use <code>data</code> without colliding. Keep the storage key stable and '+
-          'you can regenerate the app without losing what you saved.</li>'+
+          'HTML, CSS and JS compress about 4&times;. A single base64 image is usually over the limit on its own.</li>'+
+        '<li><b>Needs <code>CompressionStream</code></b> \u2014 any recent Chrome, Edge, Firefox or Safari.</li>'+
+        '<li><b>Storage is per device and per app.</b> Each app\u2019s localStorage keys are prefixed with '+
+          'its data name, so two apps can both use <code>data</code> without clashing. Keep the data name '+
+          'the same and you can rebuild the app without losing what you saved.</li>'+
         '<li><b>Back it up.</b> Home-screen apps are exempt from Safari’s 7-day storage eviction, but '+
           'apps you only ever open in a browser tab are not. Use Export above.</li>'+
         '<li><b>Signing.</b> Only apps signed with your key will run here, so a link from anyone '+
           'else is refused before it can touch your saved data. Your own apps do share one address, '+
           'so they can read each other\u2019s data &mdash; keep that in mind for anything sensitive.</li>'+
-        '<li><b>Links are too long to share</b> in most apps: past a QR code (~2,953 bytes) and many '+
-          'chat and mail clients. Treat this as yours, not as publishing.</li>'+
+        '<li><b>Links are too long for most chat apps</b> and well past what a QR code holds. '+
+          'AirDrop, Messages, email and notes are fine.</li>'+
       '</ul>'+
     '</details>'+
   '</div>';
@@ -877,29 +821,25 @@ function renderMeter(){
 
 function renderChecks(html){
   var box=$('checks');
-  if(!html || !html.trim()){ box.innerHTML=''; $('frameRow').hidden=true; return; }
+  if(!html || !html.trim()){ box.innerHTML=''; return; }
   var a=analyze(html), rows=[];
-  $('frameRow').hidden = !a.hashRouting;
   function row(ico,cls,title,body){
     rows.push('<div class="chk"><div class="ico '+cls+'">'+ico+'</div><div><b>'+title+'</b>'+
               (body?'<span>'+body+'</span>':'')+'</div></div>');
   }
   if(a.hosts.length){
     row('!','warn', a.hosts.length+' external host'+(a.hosts.length>1?'s':''),
-      esc(a.hosts.join(', '))+' &mdash; loads fine online, but these will fail in Airplane Mode. '+
-      'Fonts and CSS degrade gracefully; an external script usually does not.');
+      esc(a.hosts.join(', '))+' &mdash; fine online, but these fail in Airplane Mode. If a font or '+
+      'stylesheet does not load the app still works but looks wrong. If a script does not load it usually will not run.');
   }else{
     row('✓','ok','Fully self-contained','No external requests. Works offline.');
   }
   if(a.storage) row('\u2713','ok','Saves data','Stored under this app\u2019s own key, separate from your other apps.');
-  if(a.hashRouting) row('i','info','Changes its own address',
-    'This app sets <code>location.hash</code>, which would overwrite its own link. Use the frame option above.');
   if(a.claude)  row('i','info','Built for claude.ai storage',
     'This app saves through <code>window.claude</code>, which only exists on claude.ai. sideload replaces it '+
     'automatically so the app saves to this device instead. Data already in your Claude account stays there.');
-  if(a.modules) row('\u2713','ok','Uses ES modules','Supported.');
   if(a.dataImgs) row('!','warn', a.dataImgs+' embedded image'+(a.dataImgs>1?'s':''),
-    'Base64 images are the usual reason a payload will not fit. Removing them buys the most room.');
+    'A base64 image is usually larger than the whole URL limit on its own. Removing them frees the most space.');
   box.innerHTML=rows.join('');
 }
 
@@ -926,7 +866,6 @@ function renderApps(){
       var a=apps[+b.dataset.load];
       decodeVerified(a.payload).then(function(m){
         $('src').value=m.html; $('title').value=m.title||''; $('slug').value=m.slug||'';
-        if($('frame')) $('frame').checked = m.frame===true;
         recompute(); window.scrollTo(0,0); toast('Loaded into the editor');
       }).catch(function(err){ toast('Could not decode that entry'); });
     }
@@ -947,7 +886,7 @@ function renderDataHint(){
     }
   }catch(e){}
   $('dataHint').textContent = n
-    ? n+' stored key'+(n>1?'s':'')+' across your apps, about '+fmtBytes(bytes*2)+'. Export writes a JSON file you can re-import on another device.'
+    ? n+' saved value'+(n>1?'s':'')+' across your apps, about '+fmtBytes(bytes*2)+'. Export writes a JSON file you can import on another device.'
     : 'No app data stored yet.';
 }
 
@@ -962,10 +901,6 @@ function recompute(){
   if(!$('slug').dataset.touched) $('slug').value = title ? slugify(title) : '';
   var slug=slugify($('slug').value||title);
 
-  $('nsHint').innerHTML = slug
-    ? 'Saves under <code>'+esc(NS_PREFIX+slug+':')+'</code>'
-    : '';
-
   renderChecks(html);
 
   if(!html.trim()){
@@ -973,7 +908,7 @@ function recompute(){
     renderMeter(); setActions(false);
     return;
   }
-  var meta={v:1, title:title||'Untitled app', slug:slug, html:html, claudeShim:true, frame:$('frame').checked};
+  var meta={v:1, title:title||'Untitled app', slug:slug, html:html, claudeShim:true};
   var raw=te.encode(html).length;
   var priv=storedKey();
   if(!priv || !haveCrypto()){
@@ -1010,7 +945,7 @@ function setActions(on){
 }
 
 /* ---------------------------------------------------------- key management */
-var keyReady = false;      /* a key is present AND matches this deployment */
+var keyReady = false;      /* a key is present AND matches this site's public key */
 
 function renderKeyStatus(){
   var box=$('keyStatus'), hint=$('keyHint'), priv=storedKey();
@@ -1022,7 +957,7 @@ function renderKeyStatus(){
   if(!haveCrypto()){
     keyReady=false;
     box.innerHTML=row('!','warn','Web Crypto unavailable',
-      'Signing needs a secure context. Open this page over https, or via localhost.');
+      'Signing only works over https. Open this page from your site, not from a file.');
     hint.textContent=''; setActions(!!state.url); return;
   }
 
@@ -1030,8 +965,8 @@ function renderKeyStatus(){
     keyReady=false;
     box.innerHTML=row('!','warn','No signing key on this device',
       PUBLIC_KEY
-        ? 'Tap <b>Import key</b> and paste the key from your password manager. Without it you can edit and download apps, but not publish them.'
-        : 'This deployment has no public key yet either. Tap <b>Create key</b> to start setup.');
+        ? 'Tap <b>Import key</b> and paste it from your password manager. Without it you can edit apps here, but not publish them.'
+        : 'Your site has no public key either. Tap <b>Create key</b> to start setup.');
     hint.innerHTML = PUBLIC_KEY ? '' : 'The README has the full setup steps.';
     setActions(!!state.url);
     return;
@@ -1040,21 +975,21 @@ function renderKeyStatus(){
   publicFromPrivate(priv).then(function(pub){
     if(!PUBLIC_KEY){
       keyReady=false;
-      box.innerHTML=row('!','warn','This deployment is not configured',
-        'You have a key on this device, but no public key is set in the engine. Paste the line below into '+
-        '<code>index.html</code>, commit, and redeploy.');
+      box.innerHTML=row('!','warn','Your site has no public key',
+        'You have a key on this device, but your site does not know about it yet. Paste the line below '+
+        'into <code>index.html</code>, then commit and push.');
       hint.innerHTML='<b>Your public key</b><br><code style="overflow-wrap:anywhere">var PUBLIC_KEY = \''+esc(pub)+'\';</code>';
     }else if(pub !== PUBLIC_KEY){
       keyReady=false;
-      box.innerHTML=row('!','warn','Key does not match this deployment',
-        'The key on this device is not the one this engine trusts, so anything you publish here would be refused. '+
-        'Either import the correct key, or \u2014 if this is your own fork \u2014 replace the public key in '+
+      box.innerHTML=row('!','warn','This key does not match your site',
+        'Your site trusts a different key, so anything you publish here would be refused. Either import the '+
+        'matching key, or \u2014 if you forked this from someone else \u2014 replace the public key in '+
         '<code>index.html</code> with the one below.');
       hint.innerHTML='<b>This device\u2019s public key</b><br><code style="overflow-wrap:anywhere">var PUBLIC_KEY = \''+esc(pub)+'\';</code>';
     }else{
       keyReady=true;
       box.innerHTML=row('\u2713','ok','Ready to publish',
-        'Apps you publish are signed on this device and will run on this instance. Nothing else will.');
+        'Apps you publish are signed on this device and will run on your site. Nothing else will.');
       hint.textContent='';
     }
     setActions(!!state.url && state.url.length<=BUDGET);
@@ -1184,7 +1119,6 @@ function showCompiler(){
   src.addEventListener('input', scheduleRecompute);
   $('title').addEventListener('input', scheduleRecompute);
   $('slug').addEventListener('input', function(){ this.dataset.touched='1'; scheduleRecompute(); });
-  $('frame').addEventListener('change', scheduleRecompute);
 
   /* drag & drop onto the textarea or the page */
   ['dragenter','dragover'].forEach(function(ev){
@@ -1207,17 +1141,6 @@ function showCompiler(){
     $('src').value=''; $('title').value=''; $('slug').value='';
     delete $('slug').dataset.touched; recompute();
   };
-  /* For handing the app back to Claude, or to any other editor. */
-  $('copyHtmlBtn').onclick=function(){
-    var v=$('src').value;
-    if(!v.trim()){ toast('Nothing to copy'); return; }
-    if(navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(v).then(function(){
-        toast('Copied '+fmtBytes(te.encode(v).length)+' of HTML');
-      }).catch(function(){ $('src').select(); toast('Select all and copy'); });
-    } else { $('src').select(); toast('Select all and copy'); }
-  };
-
   $('pasteBtn').onclick=function(){
     if(!navigator.clipboard || !navigator.clipboard.readText){ toast('Clipboard read is not available here'); return; }
     navigator.clipboard.readText().then(function(t){
@@ -1256,8 +1179,8 @@ function boot(){
   }
   if(!haveCrypto()){
     fatal('Insecure context',
-      'sideload verifies app signatures with Web Crypto, which browsers only expose over https (or on localhost). '+
-      'This page was loaded in a way that does not allow it, so nothing can be verified or run.');
+      'sideload checks app signatures with Web Crypto, which browsers only allow over https. '+
+      'This page was not loaded that way, so nothing can be verified or run.');
     return;
   }
   var h=location.hash.replace(/^#/,'');

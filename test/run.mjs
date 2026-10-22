@@ -82,7 +82,7 @@ class FakeStorage {
 }
 
 /* Minimal DOM/BOM stand-in: enough for the prelude to install itself. */
-function fakeEnv(backing, slug, { claudeShim = true, direct = true, payload = 'PAY' } = {}) {
+function fakeEnv(backing, slug, { claudeShim = true, payload = 'PAY' } = {}) {
   const listeners = { window: {}, document: {} };
   const appended = [];
   const mkEl = (tag) => ({
@@ -116,8 +116,7 @@ function fakeEnv(backing, slug, { claudeShim = true, direct = true, payload = 'P
     location: { hash: '#' + payload, href: 'https://x.test/sideload/#' + payload,
                 origin: 'https://x.test' },
     history: { replaceState() {} },
-    CFG: { ns: '__sideload__' + slug + ':', slug, origin: 'https://x.test',
-           claudeShim, direct },
+    CFG: { ns: '__sideload__' + slug + ':', slug, origin: 'https://x.test', claudeShim },
   };
   sb.globalThis = sb;
   vm.createContext(sb);
@@ -345,11 +344,11 @@ head('4. Claude artifact-runtime stand-in');
 /* ============ 4b. runner guards installed by the prelude ============ */
 head('4b. Runner guards');
 {
-  const direct = fakeEnv(new FakeStorage(), 'direct-app', { direct: true });
+  const direct = fakeEnv(new FakeStorage(), 'direct-app');
   ok('error handler installed', !!direct.listeners.window.error);
   ok('rejection handler installed', !!direct.listeners.window.unhandledrejection);
   ok('click guard installed', !!direct.listeners.document.click);
-  ok('hash guard installed when direct', !!direct.listeners.window.hashchange);
+  ok('hash guard installed', !!direct.listeners.window.hashchange);
 
   const sl = direct.appended.find(
     (e) => e.getAttribute && e.getAttribute('data-sideload') === 'touch');
@@ -360,8 +359,6 @@ head('4b. Runner guards');
      sl && sl.textContent);
   ok('touch fix avoids !important', !!sl && !/!important/.test(sl.textContent));
 
-  const framed = fakeEnv(new FakeStorage(), 'framed-app', { direct: false });
-  ok('no hash guard when framed', !framed.listeners.window.hashchange);
 }
 
 /* ============ 5. real artifacts: fidelity, budget, analysis ============ */

@@ -54,13 +54,13 @@ Your browser generates a keypair. Nothing is uploaded. You get two strings:
 If you would rather use a terminal, `node tools/keygen.mjs` does the same thing. The browser
 is safer, because a terminal leaves your private key in your shell history.
 
-### 3. Put your public key in the engine
+### 3. Put your public key in your copy
 
 Copy the `var PUBLIC_KEY = '...';` line that the compiler shows you. Replace the empty one
 near the top of `index.html`:
 
 ```js
-/* INSTANCE PUBLIC KEY -- replace this with your own. */
+/* INSTANCE PUBLIC KEY  --  replace this with your own. See the README. */
 var PUBLIC_KEY = 'BG9x...your key...';
 ```
 
@@ -85,14 +85,14 @@ nothing.
 
 1. Get an HTML file from Claude, or write one yourself. Copy it.
 2. Open your compiler and paste it in.
-3. The name fills in from the `<title>` tag. A storage key is suggested below it.
+3. The name fills in from the `<title>` tag. A data name is suggested below it.
 4. Check the size meter. You have about 64,000 URL characters. Most single-file apps use
    around a third of that.
 5. Tap **Open app**, then Share → **Add to Home Screen**.
 
 ## Updating an app
 
-Paste the new HTML, **keep the same storage key**, and publish. Open the new link and your
+Paste the new HTML, **keep the same data name**, and publish. Open the new link and your
 saved data will still be there, because the site address has not changed.
 
 Your home screen icon still points at the old link, so delete it and add the new one. This
@@ -161,9 +161,9 @@ storage works, and it gets the real page, so touch and scrolling behave normally
 ## Limits
 
 - **About 64,000 URL characters**, which is roughly 150–200 KB of HTML once compressed.
-  Markup, CSS and JavaScript compress about four times. One embedded image will use up the
-  whole budget, and the size meter warns you before you find out the hard way.
-- **iOS 16.4 or newer**, for `CompressionStream`. Any current Chrome or Firefox is fine.
+  HTML, CSS and JavaScript compress about four times. A single base64 image is usually over
+  the limit on its own. The size meter tells you before you publish.
+- **Needs `CompressionStream`** — any recent Chrome, Edge, Firefox or Safari.
 - **Must be served over https**, because signature checking uses Web Crypto, which browsers
   only allow on secure pages.
 - **External files work online but not offline.** CDN scripts, web fonts and remote images
@@ -261,13 +261,13 @@ things follow from it:
 
 ## Troubleshooting
 
-**"This instance has no signing key"** — `PUBLIC_KEY` is still empty in `index.html`. See
+**"This site has no signing key"** — `PUBLIC_KEY` is still empty in `index.html`. See
 step 3.
 
-**"Key does not match this deployment"** — usually a fork where step 3 was skipped, so the
+**"This key does not match your site"** — usually a fork where step 3 was skipped, so the
 engine still trusts the original author's key. The compiler shows you the line to paste.
 
-**"Refused: this link is not signed by this instance"** — this is the signature check doing
+**"Refused: this link is not signed by your key"** — this is the signature check doing
 its job. The link was made somewhere else, altered, or is an old unsigned link from before
 signing existed. Make it again in your compiler.
 
