@@ -1,7 +1,7 @@
 # sideload
 
-Run a single-file HTML app straight from a URL. One static page, no backend, no build step,
-and no deploy for each app you make.
+Run a single-file HTML app straight from a URL. The whole engine is one static page, and
+you never deploy anything again after setting it up.
 
 On iOS you cannot open a local `.html` file and have it run as an app. Safari blocks it. So
 every small utility you generate with an AI needs a full deploy before it can sit on your
@@ -12,8 +12,8 @@ Open that link in Safari, add it to your home screen, and it runs full screen an
 with its own name and icon. You can do all of this from your phone.
 
 ```
-you.github.io/sideload/#2-MEUCIQ...H4sIAAAA...
-                         ^signature  ^your app, gzipped
+you.github.io/sideload/#2-SXg9kR7mQw…jTn.H4sIAAAAAAAA…
+                          └ signature  └ your app, gzipped
 ```
 
 Everything after the `#` stays in your browser. Browsers never send that part to a server,
@@ -26,8 +26,8 @@ send you a link that runs their code on your site and reads your saved data.
 
 ## Setup
 
-You do this once. It takes about ten minutes. After that you can publish apps from your
-phone with no laptop and no commands.
+You do this once. After that you can publish apps from your phone, with no laptop and no
+commands.
 
 ### 1. Deploy your copy
 
@@ -36,7 +36,8 @@ Fork this repo. Then go to **Settings → Pages** and set:
 - **Source:** `Deploy from a branch` — GitHub often defaults to "GitHub Actions", so change it
 - **Branch:** `main`, folder `/ (root)`
 
-Save. A minute later your copy is live at `https://<you>.github.io/sideload/`.
+Save. Your copy goes live at `https://<you>.github.io/sideload/`, usually within a minute
+or two on the first deploy.
 
 It will not run anything yet, because you have not set a key. That is expected.
 
@@ -64,7 +65,7 @@ near the top of `index.html`:
 var PUBLIC_KEY = 'BG9x...your key...';
 ```
 
-Commit and push. GitHub Pages redeploys in under a minute.
+Commit and push, then wait for GitHub Pages to redeploy.
 
 Reload the compiler. The key section should now say **Ready to publish**.
 
@@ -86,8 +87,7 @@ nothing.
 1. Get an HTML file from Claude, or write one yourself. Copy it.
 2. Open your compiler and paste it in.
 3. The name fills in from the `<title>` tag. A data name is suggested below it.
-4. Check the size meter. You have about 64,000 URL characters. Most single-file apps use
-   around a third of that.
+4. Check the size meter. You have about 64,000 URL characters.
 5. Tap **Open app**, then Share → **Add to Home Screen**.
 
 ## Updating an app
@@ -95,9 +95,8 @@ nothing.
 Paste the new HTML, **keep the same data name**, and publish. Open the new link and your
 saved data will still be there, because the site address has not changed.
 
-Your home screen icon still points at the old link, so delete it and add the new one. This
-takes about fifteen seconds. There is no way around it: the app travels inside the link, so
-new code always means a new link.
+Your home screen icon still points at the old link, so delete it and add the new one. There
+is no way around that: the app travels inside the link, so new code always means a new link.
 
 ## Sharing
 
@@ -106,8 +105,8 @@ AirDrop, Messages, email, or a note. Their browser loads your engine from your s
 your signature against your public key, and runs the app. They can add it to their home
 screen too. Their data stays in their own browser.
 
-The link is over 20,000 characters, so it will not fit in a QR code and some chat apps will
-break it.
+The link runs to tens of thousands of characters, so it will not fit in a QR code and some
+chat apps will break it.
 
 **Sharing the tool** means sending someone this repo. They set up their own copy with their
 own key. They cannot publish to your site and you cannot publish to theirs. That is what
@@ -161,8 +160,8 @@ storage works, and it gets the real page, so touch and scrolling behave normally
 ## Limits
 
 - **About 64,000 URL characters**, which is roughly 150–200 KB of HTML once compressed.
-  HTML, CSS and JavaScript compress about four times. A single base64 image is usually over
-  the limit on its own. The size meter tells you before you publish.
+  HTML, CSS and JavaScript typically compress three to four times. A single base64 image is
+  usually over the limit on its own. The size meter tells you before you publish.
 - **Needs `CompressionStream`** — any recent Chrome, Edge, Firefox or Safari.
 - **Must be served over https**, because signature checking uses Web Crypto, which browsers
   only allow on secure pages.
@@ -200,7 +199,7 @@ differences that matter:
 | Works offline | No | Yes |
 | Where your data is kept | Anthropic's servers | your own device |
 | Saving data | needs the author on a paid plan | free |
-| Viewer needs an account | depends which share button you use | no |
+| Viewer needs an account | the older Publish link works without one, the newer Share button does not | no |
 | Who controls the hosting | Anthropic | you |
 
 If you want a small private tool that keeps working regardless of your subscription, runs on
@@ -224,7 +223,7 @@ index.html              the whole engine: compiler, runner, signing, storage, la
 icon.png                fallback apple-touch-icon
 tools/keygen.mjs         generate a keypair from the command line
 samples/
-  storage-probe.html    writes generic keys, so two copies show storage is separated
+  storage-probe.html    writes generic storage keys, so two copies show apps stay separate
 test/run.mjs            headless tests
 test/mklinks.mjs        dev helper: short links for testing on a phone
 ```
@@ -267,15 +266,16 @@ step 3.
 **"This key does not match your site"** — usually a fork where step 3 was skipped, so the
 engine still trusts the original author's key. The compiler shows you the line to paste.
 
-**"Refused: this link is not signed by your key"** — this is the signature check doing
-its job. The link was made somewhere else, altered, or is an old unsigned link from before
-signing existed. Make it again in your compiler.
+**"Refused: this link is not signed by your key"** — the signature check doing its job. The
+link was made on someone else's site, or altered after it was made. Build it again in your
+own compiler.
 
 **"Insecure context"** — Web Crypto needs https. Use your Pages URL, not a `file://` path or
 a plain-http address.
 
 **A blank app with no error** — check the compiler's external-host warning. An app that loads
-a script from a CDN will fail offline. Missing fonts are harmless; missing scripts are not.
+a script from a CDN will fail offline. If a font or stylesheet does not load the app still
+works but looks wrong. If a script does not load it usually will not run.
 
 ## Prior art
 
