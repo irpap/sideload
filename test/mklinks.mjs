@@ -2,9 +2,9 @@
    20,000-character URL is tappable on a phone during testing.
 
    Needs a signing key, since the engine refuses unsigned payloads:
-     SIDELOAD_KEY=<private key>  node test/mklinks.mjs https://host
+     SIDELOAD_KEY=<private key>  node test/mklinks.mjs https://host [extra.html ...]
    or put the key in local/key.txt (gitignored) and just:
-     node test/mklinks.mjs https://host                                      */
+     node test/mklinks.mjs https://host [extra.html ...]                                      */
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -41,7 +41,7 @@ if (!priv) {
   console.error(`
 No signing key. The engine refuses unsigned payloads, so this tool needs one.
 
-  SIDELOAD_KEY=<private key> node test/mklinks.mjs <baseUrl>
+  SIDELOAD_KEY=<private key> node test/mklinks.mjs <baseUrl> [extra.html ...]
 
 or write the key to local/key.txt (gitignored). Generate one with:
 
@@ -59,11 +59,13 @@ const base = (process.argv[2] || 'http://localhost:8080').replace(/\/+$/, '');
 const outDir = path.join(root, 'local');
 fs.mkdirSync(outDir, { recursive: true });
 
-/* [ sourceFile, stubName, slugOverride ] */
+/* Two copies of the probe under different slugs, to show storage is separated.
+   Add your own files as extra arguments after the base URL. */
+const extras = process.argv.slice(3);
 const jobs = [
-  ['/Users/irene/Downloads/Fully Mine.html', 'fully-mine', null],
   [path.join(root, 'samples/storage-probe.html'), 'probe-a', 'probe-a'],
   [path.join(root, 'samples/storage-probe.html'), 'probe-b', 'probe-b'],
+  ...extras.map((f, i) => [f, 'app-' + (i + 1), null]),
 ];
 
 const index = [];
