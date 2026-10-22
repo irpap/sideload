@@ -149,8 +149,20 @@ details ul{padding-left:19px;margin:8px 0}
 var NS_PREFIX = '__sideload__';          /* app data:  __sideload__<slug>:<key>   */
 var SELF_NS   = '__sideload$self:';      /* own state: '$' can't occur in a slug  */
 var BUDGET    = 64000;                   /* conservative URL ceiling for Safari   */
-var VERSION   = '1';
+var VERSION   = '2';
 var MAX_RECENT= 24;
+
+/* =====================================================================
+ * INSTANCE PUBLIC KEY  --  replace this with your own. See the README.
+ *
+ * This engine will ONLY run app links signed by the matching private key.
+ * Leave it blank and nothing will run until you configure it.
+ *
+ * Keep this in the engine, never in the payload. If the payload carried its
+ * own public key, anyone could sign with their own key and the check would
+ * pass, which would make it useless.
+ * ===================================================================== */
+var PUBLIC_KEY = '';
 
 var te = new TextEncoder(), td = new TextDecoder();
 var $ = function(id){ return document.getElementById(id); };
@@ -180,15 +192,80 @@ function fromB64url(s){
   for(var i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i);
   return out;
 }
-function encodePayload(meta){
-  return gzipStr(JSON.stringify(meta)).then(function(b){ return VERSION+'-'+toB64url(b); });
+/* ---------------------------------------------------------------- crypto */
+var EC     = {name:'ECDSA', namedCurve:'P-256'};
+var SIGALG = {name:'ECDSA', hash:'SHA-256'};
+
+function haveCrypto(){
+  return !!(window.crypto && crypto.subtle && typeof crypto.subtle.sign==='function');
 }
-function decodePayload(payload){
-  var i = payload.indexOf('-');
-  if(i < 0) throw new Error('Malformed payload: no version prefix.');
-  var v = payload.slice(0,i);
-  if(v !== VERSION) throw new Error('This link was made by sideload format "'+v+'", but this page speaks "'+VERSION+'".');
-  return gunzipBytes(fromB64url(payload.slice(i+1))).then(JSON.parse);
+function importPublic(b64){
+  return crypto.subtle.importKey('raw', fromB64url(b64), EC, true, ['verify']);
+}
+function importPrivate(b64){
+  return crypto.subtle.importKey('pkcs8', fromB64url(b64), EC, true, ['sign']);
+}
+function genKeyPair(){ return crypto.subtle.generateKey(EC, true, ['sign','verify']); }
+function exportPublicRaw(key){
+  return crypto.subtle.exportKey('raw', key).then(function(b){ return toB64url(new Uint8Array(b)); });
+}
+function exportPrivatePkcs8(key){
+  return crypto.subtle.exportKey('pkcs8', key).then(function(b){ return toB64url(new Uint8Array(b)); });
+}
+/* Web Crypto cannot export a public key from a private one. A JWK export of a
+   P-256 private key does include x and y, so rebuild the raw point from those. */
+function publicFromPrivate(b64priv){
+  return importPrivate(b64priv)
+    .then(function(k){ return crypto.subtle.exportKey('jwk', k); })
+    .then(function(jwk){
+      var x=fromB64url(jwk.x), y=fromB64url(jwk.y), raw=new Uint8Array(65);
+      raw[0]=4; raw.set(x,1); raw.set(y,33);
+      return toB64url(raw);
+    });
+}
+
+/* ---- signing key for this device (compiler side) ---- */
+function storedKey(){ var v=selfGet('key',null); return typeof v==='string'?v:null; }
+function storeKey(b64){ selfSet('key', b64); }
+function forgetStoredKey(){ try{ localStorage.removeItem(SELF_NS+'key'); }catch(e){} }
+
+/* ------------------------------------------------- payload: sign and verify
+ * Format:  <version>-<base64url signature>.<base64url gzip(json)>
+ * The signature covers the exact gzip bytes that get decompressed, so what
+ * was signed and what runs are the same bytes.                            */
+function encodeSigned(meta, privB64){
+  return gzipStr(JSON.stringify(meta)).then(function(bytes){
+    return importPrivate(privB64).then(function(k){
+      return crypto.subtle.sign(SIGALG, k, bytes).then(function(sig){
+        return VERSION+'-'+toB64url(new Uint8Array(sig))+'.'+toB64url(bytes);
+      });
+    });
+  });
+}
+function decodeVerified(payload){
+  return Promise.resolve().then(function(){
+    var dash = payload.indexOf('-');
+    if(dash < 0) throw new Error('Malformed link: no version prefix.');
+    var v = payload.slice(0, dash);
+    if(v !== VERSION)
+      throw new Error('This link uses sideload format "'+v+'", but this instance speaks "'+VERSION+'".');
+    var rest = payload.slice(dash+1), dot = rest.indexOf('.');
+    if(dot < 0) throw new Error('Malformed link: missing signature.');
+    if(!PUBLIC_KEY) throw new Error('UNCONFIGURED');
+
+    var sig, bytes;
+    try{ sig = fromB64url(rest.slice(0,dot)); bytes = fromB64url(rest.slice(dot+1)); }
+    catch(e){ throw new Error('Malformed link: could not decode.'); }
+
+    /* Verify before decompressing. Nothing is unpacked or rendered unless
+       this check passes. */
+    return importPublic(PUBLIC_KEY)
+      .then(function(pub){ return crypto.subtle.verify(SIGALG, pub, sig, bytes); })
+      .then(function(good){
+        if(!good) throw new Error('BADSIG');
+        return gunzipBytes(bytes).then(JSON.parse);
+      });
+  });
 }
 
 /* ------------------------------------------------------------- utilities */
@@ -264,9 +341,9 @@ function recordApp(meta,payload){
 }
 
 /* ====================================================================== *
- * GUEST PRELUDE — injected as the first script inside the app's <head>.
- * Runs before any app code. Namespaces storage, reports errors upward,
- * and optionally stands in for the Claude artifact runtime.
+ * Injected as the first script inside the app's <head>, so it runs before
+ * any app code. It namespaces storage, shows errors, and can stand in for
+ * the Claude artifact runtime.
  * ====================================================================== */
 var PRELUDE_BODY = `
 var NS = CFG.ns;
@@ -372,7 +449,7 @@ if(CFG.claudeShim && !window.claude){
   };
 }
 
-/* --- failures become a visible note, never a blank screen ------------- */
+/* --- show failures instead of leaving a blank screen ------------------ */
 var OV_CSS = ''
  + '.box{padding:0 8px calc(8px + env(safe-area-inset-bottom));'
  + 'font:13px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}'
@@ -397,7 +474,7 @@ function ensureBox(){
   host.setAttribute('data-sideload','notes');
   host.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;pointer-events:none';
   document.body.appendChild(host);
-  /* shadow root so the app CSS cannot restyle or hide these */
+  /* Use a shadow root so the app's CSS cannot restyle or hide these. */
   var sr=host.attachShadow({mode:'open'});
   sr.innerHTML='<style>'+OV_CSS+'</style><div class="box"></div>';
   ovBox=sr.querySelector('.box');
@@ -462,13 +539,13 @@ document.addEventListener('click',function(e){
   if(!a) return;
   var h=a.getAttribute('href')||'';
   if(/^https?:/i.test(h)){
-    /* leaving would discard the app, which lives only in this URL */
+    /* Navigating away would discard the app, because it only exists in this URL. */
     if(!a.target){ a.target='_blank'; a.rel='noopener noreferrer'; }
     return;
   }
   if(CFG.direct && h.charAt(0)==='#'){
-    /* an in-page anchor would overwrite the payload fragment and lose the
-       app for good, so scroll by hand instead of letting the hash change */
+    /* A link to #something would replace the payload and lose the app, so
+       scroll to the target instead of letting the # change. */
     e.preventDefault();
     var id=h.slice(1);
     if(!id){ window.scrollTo(0,0); return; }
@@ -477,7 +554,7 @@ document.addEventListener('click',function(e){
   }
 },true);
 
-/* last resort: something still clobbered the fragment, so put it back */
+/* Fallback: if something changed the # anyway, put the payload back. */
 if(CFG.direct && PAYLOAD){
   window.addEventListener('hashchange',function(){
     if(location.hash.replace(/^#/,'')!==PAYLOAD){
@@ -486,10 +563,10 @@ if(CFG.direct && PAYLOAD){
   });
 }
 
-/* --- let sliders own their own drag ----------------------------------- */
-/* Without this a horizontal drag on a native range input is resolved as a
-   page pan and the value never changes. Appended late so it wins on equal
-   specificity; no !important, so an app that sets touch-action still does. */
+/* --- make sliders draggable ------------------------------------------ */
+/* Without this, dragging a range input sideways scrolls the page and the
+   value never changes. Added late so it takes effect over the app's own CSS at
+   equal specificity. No !important, so an app that sets touch-action wins. */
 (function(){
   function addFix(){
     if(!document.head && !document.body) return;
@@ -574,7 +651,7 @@ function setTouchIcon(href){
 }
 
 function runApp(payload){
-  decodePayload(payload).then(function(meta){
+  decodeVerified(payload).then(function(meta){
     if(!meta || typeof meta.html!=='string') throw new Error('Payload decoded but contained no app HTML.');
 
     var title = (meta.title||'').trim() || guessTitle(meta.html) || 'app';
@@ -584,9 +661,9 @@ function runApp(payload){
 
     try{ recordApp({title:title,slug:slug}, payload); }catch(e){}
 
-    /* Everything iOS reads at Add-to-Home-Screen time has to live in the
-       document that is actually on screen, so inject it alongside the
-       prelude rather than relying on this page's own <head>. */
+    /* iOS reads these when you tap Add to Home Screen, and it reads them from
+       the document on screen. document.write replaces our own <head>, so put
+       them into the app's HTML instead. */
     var inject = buildPrelude(slug,{claudeShim: meta.claudeShim!==false, direct: !framed})
       + '<meta name="apple-mobile-web-app-capable" content="yes">'
       + '<meta name="mobile-web-app-capable" content="yes">'
@@ -598,8 +675,8 @@ function runApp(payload){
     var doc = injectPrelude(meta.html, inject);
 
     if(framed){
-      /* Opt-in isolation. Only worth it for an app that drives its own
-         location.hash, which would otherwise overwrite the payload. */
+      /* Optional iframe mode. Only needed for an app that sets location.hash
+         itself, which would otherwise overwrite the payload. */
       document.title = title;
       setMetaTag('apple-mobile-web-app-title', title);
       if(icon) setTouchIcon(icon);
@@ -609,28 +686,44 @@ function runApp(payload){
       frame.id='stage';
       frame.setAttribute('allow','clipboard-write; clipboard-read; fullscreen; camera; microphone; geolocation');
       frame.setAttribute('title', title);
-      /* no sandbox attribute: a sandbox without allow-same-origin forces an
-         opaque origin, where localStorage throws SecurityError */
+      /* No sandbox attribute, deliberately. A sandbox without allow-same-origin
+         gives the frame an opaque origin, and localStorage throws SecurityError
+         there, so any app that saves data breaks. */
       frame.srcdoc = doc;
       document.body.appendChild(frame);
       return;
     }
 
-    /* Default: become the app. No iframe means no nested scroll container,
-       so touch gestures, momentum scrolling, viewport units and safe-area
-       insets are all handled natively -- a drag on a slider is not resolved
-       as a pan of the frame. Same origin and same URL, so storage still
-       works and the fragment survives for Add to Home Screen. */
+    /* Default path: replace this page with the app. Without an iframe there is
+       no second scrollable layer, so touch, scrolling, viewport units and
+       safe-area insets all behave normally, and dragging a slider no longer
+       scrolls the page instead. The address does not change, so storage keeps
+       working and Add to Home Screen still captures the payload. */
     document.title = title;
     document.open();
     document.write(doc);
     document.close();
 
   }).catch(function(err){
+    var m = (err && err.message) || String(err);
+
+    if(m === 'BADSIG'){
+      fatal('Refused: this link is not signed by this instance',
+        'sideload only runs apps signed with this instance\u2019s private key. This one was not \u2014 it may have '+
+        'been tampered with, built on someone else\u2019s instance, or crafted by someone who wants your saved data. '+
+        'Nothing in it has been run.');
+      return;
+    }
+    if(m === 'UNCONFIGURED'){
+      fatal('This instance has no signing key',
+        'No public key is configured in this deployment, so nothing can be verified and nothing will run. '+
+        'Open the compiler and create a key, then follow the setup steps in the README.');
+      return;
+    }
     var extra='';
     if(payload.length>=BUDGET-200)
-      extra=' The link is '+fmtNum(payload.length)+' characters, right at the limit — it may have been truncated when it was saved or shared.';
-    fatal('Could not open this link', (err&&err.message||String(err))+extra);
+      extra=' The link is '+fmtNum(payload.length)+' characters, right at the limit \u2014 it may have been truncated when it was saved or shared.';
+    fatal('Could not open this link', m+extra);
   });
 }
 
@@ -644,9 +737,22 @@ function compilerHTML(){
   '<div class="wrap">'+
     '<header>'+
       '<h1>sideload<span class="hash">#</span></h1>'+
-      '<div class="tag">Paste a single-file HTML app. Get a link that <em>is</em> the app &mdash; '+
-        'open it in Safari, Add to Home Screen, done. No deploy, no server, no account.</div>'+
+      '<div class="tag">Paste a single-file HTML app and get a link that contains it. '+
+        'Open the link in Safari and add it to your home screen. '+
+        'No deploy, no server, no account.</div>'+
     '</header>'+
+
+    '<div class="card" id="keyCard">'+
+      '<h2>Signing key</h2>'+
+      '<div id="keyStatus"></div>'+
+      '<div class="actions">'+
+        '<button class="btn sm" id="keyNew">Create key</button>'+
+        '<button class="btn sm" id="keyImport">Import key&hellip;</button>'+
+        '<button class="btn sm" id="keyExport">Show key</button>'+
+        '<button class="btn sm" id="keyForget">Forget key</button>'+
+      '</div>'+
+      '<div class="hint" id="keyHint"></div>'+
+    '</div>'+
 
     '<div class="card">'+
       '<h2>1 &middot; Source</h2>'+
@@ -677,8 +783,8 @@ function compilerHTML(){
       '<div class="sw">'+
         '<input type="checkbox" id="frame">'+
         '<label for="frame" style="margin:0">Run in an isolated frame'+
-          '<span>Off is better: the app owns the real viewport, so sliders and scrolling '+
-          'feel native. Turn it on only if the app drives its own <code>location.hash</code>, '+
+          '<span>Leave this off. The app gets the real page, so sliders and scrolling '+
+          'behave normally. Turn it on only if the app sets its own <code>location.hash</code>, '+
           'which would otherwise overwrite the link.</span></label>'+
       '</div>'+
     '</div>'+
@@ -725,9 +831,9 @@ function compilerHTML(){
 
     '<details>'+
       '<summary>How this works, and what it can’t do</summary>'+
-      '<p>Your app is gzipped, base64url-encoded, and parked in the URL after the <code>#</code>. '+
-      'Fragments are never sent to a server, so the code and all its data stay on your device. '+
-      'This page decodes it and runs it in a same-origin iframe.</p>'+
+      '<p>Your app is gzipped, base64url-encoded, signed with your key, and placed in the URL '+
+      'after the <code>#</code>. Browsers never send that part to a server, so your code and '+
+      'your data stay on your device. This page checks the signature, then runs the app.</p>'+
       '<ul>'+
         '<li><b>Budget.</b> About '+fmtNum(BUDGET)+' URL characters, roughly 150&ndash;200&nbsp;KB of HTML after compression. '+
           'An embedded image will blow past it; plain markup, CSS and JS compress ~4&times;.</li>'+
@@ -737,8 +843,9 @@ function compilerHTML(){
           'you can regenerate the app without losing what you saved.</li>'+
         '<li><b>Back it up.</b> Home-screen apps are exempt from Safari’s 7-day storage eviction, but '+
           'apps you only ever open in a browser tab are not. Use Export above.</li>'+
-        '<li><b>Trust model.</b> Apps share one origin, so the isolation here prevents <em>accidents</em>, '+
-          'not attacks. Paste code you wrote or asked an AI to write for you &mdash; not HTML a stranger sent you.</li>'+
+        '<li><b>Signing.</b> Only apps signed with your key will run here, so a link from anyone '+
+          'else is refused before it can touch your saved data. Your own apps do share one address, '+
+          'so they can read each other\u2019s data &mdash; keep that in mind for anything sensitive.</li>'+
         '<li><b>Links are too long to share</b> in most apps: past a QR code (~2,953 bytes) and many '+
           'chat and mail clients. Treat this as yours, not as publishing.</li>'+
       '</ul>'+
@@ -820,7 +927,7 @@ function renderApps(){
     if(b.dataset.open!=null){ location.href=baseUrl()+'#'+apps[+b.dataset.open].payload; }
     else if(b.dataset.load!=null){
       var a=apps[+b.dataset.load];
-      decodePayload(a.payload).then(function(m){
+      decodeVerified(a.payload).then(function(m){
         $('src').value=m.html; $('title').value=m.title||''; $('slug').value=m.slug||'';
         if($('claudeShim')) $('claudeShim').checked = m.claudeShim!==false;
         if($('frame')) $('frame').checked = m.frame===true;
@@ -872,7 +979,21 @@ function recompute(){
   }
   var meta={v:1, title:title||'Untitled app', slug:slug, html:html, claudeShim:$('claudeShim').checked, frame:$('frame').checked};
   var raw=te.encode(html).length;
-  encodePayload(meta).then(function(payload){
+  var priv=storedKey();
+  if(!priv || !haveCrypto()){
+    /* No key on this device. Still show the size and allow download, but
+       do not produce a link. */
+    gzipStr(JSON.stringify(meta)).then(function(bytes){
+      if($('src').value!==html) return;
+      state={payload:null, url:null, raw:raw, gz:bytes.length, meta:meta};
+      state.url=baseUrl()+'#'+VERSION+'-'+'x'.repeat(86)+'.'+toB64url(bytes);  /* size estimate only */
+      state.payload=null;
+      renderMeter(); setActions(false);
+      $('fitHint').textContent='Measured only \u2014 import your signing key to publish.';
+    });
+    return;
+  }
+  encodeSigned(meta, priv).then(function(payload){
     if($('src').value!==html) return;              /* stale */
     state.payload=payload;
     state.url=baseUrl()+'#'+payload;
@@ -889,7 +1010,120 @@ function recompute(){
 }
 
 function setActions(on){
-  ['openBtn','copyBtn','dlBtn'].forEach(function(id){ $(id).disabled=!on; });
+  ['openBtn','copyBtn'].forEach(function(id){ $(id).disabled = !on || !keyReady; });
+  $('dlBtn').disabled = !on;          /* downloading needs no signature */
+}
+
+/* ---------------------------------------------------------- key management */
+var keyReady = false;      /* a key is present AND matches this deployment */
+
+function renderKeyStatus(){
+  var box=$('keyStatus'), hint=$('keyHint'), priv=storedKey();
+  var row=function(ico,cls,title,body){
+    return '<div class="chk"><div class="ico '+cls+'">'+ico+'</div><div><b>'+title+'</b>'+
+           (body?'<span>'+body+'</span>':'')+'</div></div>';
+  };
+
+  if(!haveCrypto()){
+    keyReady=false;
+    box.innerHTML=row('!','warn','Web Crypto unavailable',
+      'Signing needs a secure context. Open this page over https, or via localhost.');
+    hint.textContent=''; setActions(!!state.url); return;
+  }
+
+  if(!priv){
+    keyReady=false;
+    box.innerHTML=row('!','warn','No signing key on this device',
+      PUBLIC_KEY
+        ? 'Tap <b>Import key</b> and paste the key from your password manager. Without it you can edit and download apps, but not publish them.'
+        : 'This deployment has no public key yet either. Tap <b>Create key</b> to start setup.');
+    hint.innerHTML = PUBLIC_KEY ? '' : 'The README has the full setup steps.';
+    setActions(!!state.url);
+    return;
+  }
+
+  publicFromPrivate(priv).then(function(pub){
+    if(!PUBLIC_KEY){
+      keyReady=false;
+      box.innerHTML=row('!','warn','This deployment is not configured',
+        'You have a key on this device, but no public key is set in the engine. Paste the line below into '+
+        '<code>index.html</code>, commit, and redeploy.');
+      hint.innerHTML='<b>Your public key</b><br><code style="overflow-wrap:anywhere">var PUBLIC_KEY = \''+esc(pub)+'\';</code>';
+    }else if(pub !== PUBLIC_KEY){
+      keyReady=false;
+      box.innerHTML=row('!','warn','Key does not match this deployment',
+        'The key on this device is not the one this engine trusts, so anything you publish here would be refused. '+
+        'Either import the correct key, or \u2014 if this is your own fork \u2014 replace the public key in '+
+        '<code>index.html</code> with the one below.');
+      hint.innerHTML='<b>This device\u2019s public key</b><br><code style="overflow-wrap:anywhere">var PUBLIC_KEY = \''+esc(pub)+'\';</code>';
+    }else{
+      keyReady=true;
+      box.innerHTML=row('\u2713','ok','Ready to publish',
+        'Apps you publish are signed on this device and will run on this instance. Nothing else will.');
+      hint.textContent='';
+    }
+    setActions(!!state.url && state.url.length<=BUDGET);
+  }).catch(function(){
+    keyReady=false;
+    box.innerHTML=row('!','warn','Stored key is unreadable',
+      'Forget it and import a fresh copy from your backup.');
+    setActions(!!state.url);
+  });
+}
+
+function wireKeyButtons(){
+  $('keyNew').onclick=function(){
+    if(storedKey() && !confirm('This device already has a key. Replace it?\n\nIf you have not backed the old one up, '+
+       'you will not be able to publish updates to apps signed with it.')) return;
+    genKeyPair().then(function(kp){
+      return Promise.all([exportPrivatePkcs8(kp.privateKey), exportPublicRaw(kp.publicKey)]);
+    }).then(function(r){
+      storeKey(r[0]);
+      renderKeyStatus(); scheduleRecompute();
+      showKeyBackup(r[0], r[1], true);
+    }).catch(function(e){ alert('Could not generate a key: '+(e&&e.message||e)); });
+  };
+
+  $('keyImport').onclick=function(){
+    var v=prompt('Paste your sideload private key:');
+    if(!v) return;
+    v=v.trim();
+    importPrivate(v).then(function(){
+      storeKey(v); renderKeyStatus(); scheduleRecompute(); toast('Key imported');
+    }).catch(function(){ alert('That does not look like a sideload private key.'); });
+  };
+
+  $('keyExport').onclick=function(){
+    var priv=storedKey();
+    if(!priv){ toast('No key on this device'); return; }
+    publicFromPrivate(priv).then(function(pub){ showKeyBackup(priv, pub, false); });
+  };
+
+  $('keyForget').onclick=function(){
+    if(!storedKey()){ toast('No key on this device'); return; }
+    if(!confirm('Forget the signing key on this device?\n\nSaved app data is untouched, and existing links keep '+
+       'working. But you will not be able to publish or update until you import it again.')) return;
+    forgetStoredKey(); renderKeyStatus(); scheduleRecompute(); toast('Key forgotten');
+  };
+}
+
+function showKeyBackup(priv, pub, isNew){
+  var box=$('keyHint');
+  box.innerHTML=
+    (isNew?'<b>New key created. Back it up now.</b><br>':'<b>Key backup</b><br>')+
+    'Save the private key in your password manager. It is the only way to publish updates, '+
+    'and it is not recoverable.<br><br>'+
+    '<b>Private key</b> (secret)<br>'+
+    '<textarea readonly rows="3" style="font-size:11px" id="kPriv">'+esc(priv)+'</textarea>'+
+    '<button class="btn sm" id="kCopyPriv">Copy private key</button><br><br>'+
+    '<b>Public key</b> \u2014 for <code>index.html</code><br>'+
+    '<textarea readonly rows="2" style="font-size:11px">var PUBLIC_KEY = \''+esc(pub)+'\';</textarea>';
+  var b=$('kCopyPriv');
+  if(b) b.onclick=function(){
+    var t=$('kPriv');
+    if(navigator.clipboard) navigator.clipboard.writeText(t.value).then(function(){ b.textContent='Copied'; });
+    else { t.select(); b.textContent='Select and copy'; }
+  };
 }
 
 function exportAll(){
@@ -1006,6 +1240,8 @@ function showCompiler(){
   $('impBtn').onclick=function(){ $('impFile').click(); };
   $('impFile').onchange=function(){ if(this.files[0]) importBackup(this.files[0]); this.value=''; };
 
+  wireKeyButtons();
+  renderKeyStatus();
   renderApps();
   renderDataHint();
   recompute();
@@ -1015,15 +1251,21 @@ function showCompiler(){
 function boot(){
   if(typeof CompressionStream!=='function' || typeof DecompressionStream!=='function'){
     fatal('This browser is too old',
-      'sideload needs the CompressionStream API — Safari 16.4 / iOS 16.4 or newer, or any current Chrome or Firefox.');
+      'sideload needs the CompressionStream API \u2014 Safari 16.4 / iOS 16.4 or newer, or any current Chrome or Firefox.');
+    return;
+  }
+  if(!haveCrypto()){
+    fatal('Insecure context',
+      'sideload verifies app signatures with Web Crypto, which browsers only expose over https (or on localhost). '+
+      'This page was loaded in a way that does not allow it, so nothing can be verified or run.');
     return;
   }
   var h=location.hash.replace(/^#/,'');
   if(h){ runApp(h); return; }
   showCompiler();
-  /* Only in compiler mode: picking an app changes the fragment, and a reload
-     is the cleanest way in. The runner must NOT do this -- it would reload
-     on any in-app hash change, after the payload had already been lost. */
+  /* Only in compiler mode. Choosing an app changes the part after the #, so
+     reload to open it. The runner must not do this: if an app changes the #
+     itself, the payload is already gone and reloading would lose it. */
   window.addEventListener('hashchange', function(){ location.reload(); });
 }
 boot();
