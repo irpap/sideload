@@ -31,8 +31,12 @@ phone with no laptop and no commands.
 
 ### 1. Deploy your copy
 
-Fork this repo, then turn on GitHub Pages in **Settings → Pages**, with Source set to `main`
-and the root folder. A minute later your copy is live at `https://<you>.github.io/sideload/`.
+Fork this repo. Then go to **Settings → Pages** and set:
+
+- **Source:** `Deploy from a branch` — GitHub often defaults to "GitHub Actions", so change it
+- **Branch:** `main`, folder `/ (root)`
+
+Save. A minute later your copy is live at `https://<you>.github.io/sideload/`.
 
 It will not run anything yet, because you have not set a key. That is expected.
 
