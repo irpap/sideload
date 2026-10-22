@@ -101,9 +101,11 @@ details{margin-top:4px}
 summary{cursor:pointer;font-size:13px;color:var(--dim);padding:4px 0}
 details p,details li{font-size:13px;color:var(--dim);line-height:1.6}
 details ul{padding-left:19px;margin:8px 0}
-.sw{display:flex;align-items:center;gap:9px;margin-top:11px;font-size:13px;color:var(--fg)}
+.sw{display:flex;align-items:flex-start;gap:9px;margin-top:13px;font-size:13px;color:var(--fg)}
 .sw input{width:17px;height:17px;accent-color:var(--accent);flex:0 0 auto;margin:0}
-.sw span{color:var(--dim);font-size:12.5px}
+.sw span{display:block;color:var(--dim);font-size:12.5px;margin-top:2px}
+.sw input{margin-top:2px}
+.sw label{display:block;margin:0}
 .toast{
   position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);
   background:var(--fg);color:var(--bg);padding:9px 16px;border-radius:99px;font-size:13px;
@@ -617,6 +619,7 @@ function analyze(html){
   return {
     hosts: order, hostCount: hosts, extCount: ext.length,
     storage: /\b(?:local|session)Storage\b/.test(html),
+    hashRouting: /location\s*\.\s*hash\s*=|history\s*\.\s*(?:push|replace)State/.test(html),
     claude:  /\bwindow\.claude\b|\bclaude\s*\.\s*use\s*\(/.test(html),
     modules: /type\s*=\s*["']module["']/i.test(html),
     dataImgs:(html.match(/data:image\/[a-z+.-]+;base64/gi)||[]).length
@@ -774,44 +777,35 @@ function compilerHTML(){
           '<input type="text" id="slug" placeholder="my-budget-planner" autocapitalize="none" spellcheck="false"></input></div>'+
       '</div>'+
       '<div class="hint" id="nsHint"></div>'+
-      '<div class="sw">'+
-        '<input type="checkbox" id="claudeShim" checked>'+
-        '<label for="claudeShim" style="margin:0">Stand in for the Claude artifact runtime'+
-          '<span>Gives the app a local <code>window.claude</code> so its sync code saves to this device '+
-          'instead of failing. Leave on unless the app misbehaves.</span></label>'+
-      '</div>'+
-      '<div class="sw">'+
+      /* Only shown when the pasted app actually changes location.hash itself,
+         which is the one situation where an iframe is the lesser evil. */
+      '<div class="sw" id="frameRow" hidden>'+
         '<input type="checkbox" id="frame">'+
-        '<label for="frame" style="margin:0">Run in an isolated frame'+
-          '<span>Leave this off. The app gets the real page, so sliders and scrolling '+
-          'behave normally. Turn it on only if the app sets its own <code>location.hash</code>, '+
-          'which would otherwise overwrite the link.</span></label>'+
+        '<label for="frame">Run this app in a frame'+
+          '<span>This app changes the <code>#</code> part of the address itself, which would '+
+          'overwrite its own link. Running it in a frame keeps the link intact, but sliders '+
+          'and scrolling will feel worse.</span></label>'+
       '</div>'+
     '</div>'+
 
     '<div class="card">'+
-      '<h2>3 &middot; Fit</h2>'+
+      '<h2>3 &middot; Size and warnings</h2>'+
       '<div class="meter">'+
         '<div class="bar" id="bar"><i style="width:0"></i></div>'+
-        '<div class="nums" id="nums"><span>Paste something to measure it.</span></div>'+
+        '<div class="nums" id="nums"><span>Paste an app above and its size shows here.</span></div>'+
       '</div>'+
       '<div class="hint" id="fitHint"></div>'+
-    '</div>'+
-
-    '<div class="card" id="checksCard" hidden>'+
-      '<h2>4 &middot; Checks</h2>'+
       '<div id="checks"></div>'+
     '</div>'+
 
     '<div class="card">'+
-      '<h2>5 &middot; Go</h2>'+
+      '<h2>4 &middot; Publish</h2>'+
       '<div class="actions">'+
         '<button class="btn primary" id="openBtn" disabled>Open app</button>'+
         '<button class="btn" id="copyBtn" disabled>Copy link</button>'+
-        '<button class="btn" id="dlBtn" disabled>Download .html</button>'+
       '</div>'+
-      '<div class="hint">On iPhone: open the link in Safari, tap Share &rarr; <b>Add to Home Screen</b>. '+
-        'It launches borderless and keeps its data on the device.</div>'+
+      '<div class="hint">On iPhone, tap <b>Open app</b>, then Share &rarr; <b>Add to Home Screen</b>. '+
+        'It opens full screen and keeps its data on this device.</div>'+
     '</div>'+
 
     '<div class="card">'+
@@ -871,20 +865,20 @@ function renderMeter(){
     '<span><b>'+pct.toFixed(1)+'%</b> of budget</span>';
   if(chars>BUDGET){
     hint.innerHTML='<b style="color:var(--bad)">Over budget by '+fmtNum(chars-BUDGET)+' characters.</b> '+
-      'Safari may truncate this link, which would break it silently after you bookmark it. '+
-      'Strip embedded images or large data blobs, or deploy this one as a normal web page instead.';
+      'Safari may cut this link short, and it would then break after you bookmark it. '+
+      'Remove any embedded images or large blocks of data, or host this one as a normal web page.';
   }else if(pct>80){
-    hint.textContent='Close to the limit. It should work, but there is little margin if you edit the app later.';
+    hint.textContent='Close to the limit. It will work, but there is not much room to add to the app later.';
   }else{
-    hint.textContent='Comfortable fit.';
+    hint.textContent='Plenty of room.';
   }
 }
 
 function renderChecks(html){
-  var card=$('checksCard'), box=$('checks');
-  if(!html || !html.trim()){ card.hidden=true; return; }
-  card.hidden=false;
+  var box=$('checks');
+  if(!html || !html.trim()){ box.innerHTML=''; $('frameRow').hidden=true; return; }
   var a=analyze(html), rows=[];
+  $('frameRow').hidden = !a.hashRouting;
   function row(ico,cls,title,body){
     rows.push('<div class="chk"><div class="ico '+cls+'">'+ico+'</div><div><b>'+title+'</b>'+
               (body?'<span>'+body+'</span>':'')+'</div></div>');
@@ -896,11 +890,13 @@ function renderChecks(html){
   }else{
     row('✓','ok','Fully self-contained','No external requests. Works offline.');
   }
-  if(a.storage) row('✓','ok','Uses saved state','Keys get namespaced to this app, so they will not collide with your other apps.');
-  if(a.claude)  row('i','info','Expects the Claude artifact runtime',
-    'This app calls <code>window.claude</code> for hosted storage or identity, which only exists inside claude.ai. '+
-    'With the stand-in enabled above it saves to this device instead &mdash; but data already in your Claude account will not come along.');
-  if(a.modules) row('i','info','Uses ES modules','Works here (same-origin). Would fail on anything that renders via a <code>data:</code> URL.');
+  if(a.storage) row('\u2713','ok','Saves data','Stored under this app\u2019s own key, separate from your other apps.');
+  if(a.hashRouting) row('i','info','Changes its own address',
+    'This app sets <code>location.hash</code>, which would overwrite its own link. Use the frame option above.');
+  if(a.claude)  row('i','info','Built for claude.ai storage',
+    'This app saves through <code>window.claude</code>, which only exists on claude.ai. sideload replaces it '+
+    'automatically so the app saves to this device instead. Data already in your Claude account stays there.');
+  if(a.modules) row('\u2713','ok','Uses ES modules','Supported.');
   if(a.dataImgs) row('!','warn', a.dataImgs+' embedded image'+(a.dataImgs>1?'s':''),
     'Base64 images are the usual reason a payload will not fit. Removing them buys the most room.');
   box.innerHTML=rows.join('');
@@ -929,7 +925,6 @@ function renderApps(){
       var a=apps[+b.dataset.load];
       decodeVerified(a.payload).then(function(m){
         $('src').value=m.html; $('title').value=m.title||''; $('slug').value=m.slug||'';
-        if($('claudeShim')) $('claudeShim').checked = m.claudeShim!==false;
         if($('frame')) $('frame').checked = m.frame===true;
         recompute(); window.scrollTo(0,0); toast('Loaded into the editor');
       }).catch(function(err){ toast('Could not decode that entry'); });
@@ -977,7 +972,7 @@ function recompute(){
     renderMeter(); setActions(false);
     return;
   }
-  var meta={v:1, title:title||'Untitled app', slug:slug, html:html, claudeShim:$('claudeShim').checked, frame:$('frame').checked};
+  var meta={v:1, title:title||'Untitled app', slug:slug, html:html, claudeShim:true, frame:$('frame').checked};
   var raw=te.encode(html).length;
   var priv=storedKey();
   if(!priv || !haveCrypto()){
@@ -989,7 +984,7 @@ function recompute(){
       state.url=baseUrl()+'#'+VERSION+'-'+'x'.repeat(86)+'.'+toB64url(bytes);  /* size estimate only */
       state.payload=null;
       renderMeter(); setActions(false);
-      $('fitHint').textContent='Measured only \u2014 import your signing key to publish.';
+      $('fitHint').textContent='Size only \u2014 import your signing key to publish.';
     });
     return;
   }
@@ -1011,7 +1006,6 @@ function recompute(){
 
 function setActions(on){
   ['openBtn','copyBtn'].forEach(function(id){ $(id).disabled = !on || !keyReady; });
-  $('dlBtn').disabled = !on;          /* downloading needs no signature */
 }
 
 /* ---------------------------------------------------------- key management */
@@ -1189,7 +1183,6 @@ function showCompiler(){
   src.addEventListener('input', scheduleRecompute);
   $('title').addEventListener('input', scheduleRecompute);
   $('slug').addEventListener('input', function(){ this.dataset.touched='1'; scheduleRecompute(); });
-  $('claudeShim').addEventListener('change', scheduleRecompute);
   $('frame').addEventListener('change', scheduleRecompute);
 
   /* drag & drop onto the textarea or the page */
@@ -1231,11 +1224,6 @@ function showCompiler(){
       });
     } else prompt('Copy this link:', state.url);
   };
-  $('dlBtn').onclick=function(){
-    if(!state.meta) return;
-    download(slugify(state.meta.slug||state.meta.title)+'.html', state.meta.html, 'text/html');
-  };
-
   $('expBtn').onclick=exportAll;
   $('impBtn').onclick=function(){ $('impFile').click(); };
   $('impFile').onchange=function(){ if(this.files[0]) importBackup(this.files[0]); this.value=''; };
