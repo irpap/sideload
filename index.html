@@ -541,15 +541,38 @@ window.addEventListener('error',function(e){
     else note('','Offline resources',msg,resUrls.join('\n'),function(el){ resNode=el; });
     return;
   }
-  var key=String(e.message)+'@'+e.lineno+':'+e.colno;
+  /* Not an ErrorEvent at all: a failed resource whose element had no src or
+     href. Nothing useful to report, and it is not a script error. */
+  if(e.message===undefined && e.lineno===undefined && e.filename===undefined){
+    try{ console.warn('[sideload] resource failed, no URL available', e.target); }catch(_){}
+    return;
+  }
+
+  var msg=String(e.message||'');
+
+  /* "Script error." is all a browser will say when the failing script came
+     from another site. If this app loads no outside scripts, the error cannot
+     be the app's -- it is almost always a browser extension, which injects
+     scripts into the page and can trip over document.write replacing the
+     document underneath it. Reporting it would be a false alarm. */
+  if(msg==='Script error.' && !CFG.extScripts){
+    try{ console.warn('[sideload] ignoring a cross-origin "Script error." - this app '+
+                      'loads no external scripts, so it is not from the app '+
+                      '(most likely a browser extension).'); }catch(_){}
+    return;
+  }
+
+  var key=msg+'@'+e.lineno+':'+e.colno;
   if(seenErr[key]) return; seenErr[key]=1;
   var where=e.lineno?(' (line '+e.lineno+(e.colno?', col '+e.colno:'')+')'):'';
-  var msg=String(e.message||'');
-  /* A cross-origin script reports only "Script error." with nothing else. Say
-     so, rather than showing a title with no explanation under it. */
+  var kind='err', title='App error';
+
   if(!msg) msg='The browser reported an error but gave no message.';
-  else if(msg==='Script error.')
-    msg='Script error \u2014 the browser hides details for scripts loaded from another site.';
+  else if(msg==='Script error.'){
+    kind=''; title='Error in an external script';
+    msg='One of the outside scripts this app loads threw an error. Browsers hide the '+
+        'details for scripts from another site, so there is nothing more to show.';
+  }
   var d=[];
   d.push('message: '+(e.message||'(none)'));
   if(e.filename) d.push('source:  '+e.filename);
@@ -557,7 +580,7 @@ window.addEventListener('error',function(e){
   if(e.error && e.error.name) d.push('type:    '+e.error.name);
   d.push('app:     '+CFG.slug);
   if(e.error && e.error.stack) d.push('\n'+String(e.error.stack).slice(0,900));
-  note('err','App error', msg+where, d.join('\n'));
+  note(kind,title, msg+where, d.join('\n'));
 },true);
 
 window.addEventListener('unhandledrejection',function(e){
@@ -624,7 +647,8 @@ function buildPrelude(slug, opts){
     ns: NS_PREFIX + slug + ':',
     slug: slug,
     origin: location.origin,
-    claudeShim: !!opts.claudeShim
+    claudeShim: !!opts.claudeShim,
+    extScripts: !!opts.extScripts
   });
   return '<scr'+'ipt>(function(){var CFG='+cfg+';\n'+PRELUDE_BODY+'\n})();<\/scr'+'ipt>';
 }
@@ -644,6 +668,14 @@ function analyze(html){
   html = html||'';
   var ext=[], m, re=/(?:src|href)\s*=\s*["'](https?:\/\/[^"']+)["']/gi;
   while((m=re.exec(html))) ext.push(m[1]);
+  /* Scripts are tracked on their own: only a cross-origin SCRIPT can produce
+     the browser's opaque "Script error.", so this decides whether such an
+     error could possibly have come from this app. */
+  var extScripts=[], rs=/<script[^>]+src\s*=\s*["'](https?:\/\/[^"']+)["']/gi;
+  while((m=rs.exec(html))) extScripts.push(m[1]);
+  /* A script element built at runtime counts too. */
+  if(/\.src\s*=\s*["'`]https?:/i.test(html) ||
+     /createElement\s*\(\s*["']script["']\s*\)/i.test(html)) extScripts.push('(built at runtime)');
   var re2=/@import\s+(?:url\()?\s*["']?(https?:\/\/[^"')\s]+)/gi;
   while((m=re2.exec(html))) ext.push(m[1]);
   var hosts={}, order=[];
@@ -654,6 +686,7 @@ function analyze(html){
   });
   return {
     hosts: order, hostCount: hosts, extCount: ext.length,
+    extScripts: extScripts,
     storage: /\b(?:local|session)Storage\b/.test(html),
     claude:  /\bwindow\.claude\b|\bclaude\s*\.\s*use\s*\(/.test(html),
     modules: /type\s*=\s*["']module["']/i.test(html),
@@ -685,7 +718,10 @@ function runApp(payload){
     /* iOS reads these when you tap Add to Home Screen, and it reads them from
        the document on screen. document.write replaces our own <head>, so put
        them into the app's HTML instead. */
-    var inject = buildPrelude(slug,{claudeShim: meta.claudeShim!==false})
+    var hasExtScripts = false;
+    try{ hasExtScripts = analyze(meta.html).extScripts.length > 0; }catch(e){}
+
+    var inject = buildPrelude(slug,{claudeShim: meta.claudeShim!==false, extScripts: hasExtScripts})
       + '<meta name="apple-mobile-web-app-capable" content="yes">'
       + '<meta name="mobile-web-app-capable" content="yes">'
       + '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'

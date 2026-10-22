@@ -82,7 +82,7 @@ class FakeStorage {
 }
 
 /* Minimal DOM/BOM stand-in: enough for the prelude to install itself. */
-function fakeEnv(backing, slug, { claudeShim = true, payload = 'PAY' } = {}) {
+function fakeEnv(backing, slug, { claudeShim = true, extScripts = false, payload = 'PAY' } = {}) {
   const listeners = { window: {}, document: {} };
   const appended = [];
   const mkEl = (tag) => ({
@@ -116,7 +116,7 @@ function fakeEnv(backing, slug, { claudeShim = true, payload = 'PAY' } = {}) {
     location: { hash: '#' + payload, href: 'https://x.test/sideload/#' + payload,
                 origin: 'https://x.test' },
     history: { replaceState() {} },
-    CFG: { ns: '__sideload__' + slug + ':', slug, origin: 'https://x.test', claudeShim },
+    CFG: { ns: '__sideload__' + slug + ':', slug, origin: 'https://x.test', claudeShim, extScripts },
   };
   sb.globalThis = sb;
   vm.createContext(sb);
@@ -361,7 +361,62 @@ head('4b. Runner guards');
 
 }
 
+/* ========== 4c. errors that are not the app's fault ==========
+ * A cross-origin "Script error." carries no detail by design. If the app
+ * loads no outside scripts it cannot have produced one, and reporting it
+ * would be a false alarm -- usually a browser extension tripping over
+ * document.write replacing the document.                                  */
+head("4c. Errors that are not the app's fault");
+{
+  const notesIn = (env) =>
+    env.appended.filter((e) => String(e.className || '').indexOf('n') === 0).length;
+
+  const fire = (env, ev) => {
+    for (const h of env.listeners.window.error || []) h(ev);
+    for (const h of env.listeners.window.load || []) h();   // flush pending notes
+  };
+
+  /* app with no external scripts: stay quiet */
+  const quiet = fakeEnv(new FakeStorage(), 'quiet-app', { extScripts: false });
+  fire(quiet, { message: 'Script error.', lineno: 0, colno: 0, filename: '', target: quiet.win });
+  eq('cross-origin script error suppressed when the app has none', notesIn(quiet), 0);
+
+  /* app that does load external scripts: report it */
+  const loud = fakeEnv(new FakeStorage(), 'loud-app', { extScripts: true });
+  fire(loud, { message: 'Script error.', lineno: 0, colno: 0, filename: '', target: loud.win });
+  ok('cross-origin script error reported when the app loads scripts', notesIn(loud) === 1,
+     'notes: ' + notesIn(loud));
+
+  /* a genuine app error is always reported */
+  const real = fakeEnv(new FakeStorage(), 'real-app', { extScripts: false });
+  fire(real, { message: 'x is not a function', lineno: 42, colno: 7,
+               filename: 'about:srcdoc', target: real.win,
+               error: { name: 'TypeError', stack: 'TypeError: x is not a function' } });
+  eq('a real app error is still reported', notesIn(real), 1);
+
+  /* a resource failure with no URL must not become a bare "App error" */
+  const bare = fakeEnv(new FakeStorage(), 'bare-app', { extScripts: false });
+  fire(bare, { target: { tagName: 'SOURCE' } });
+  eq('resource failure with no URL is not reported as an app error', notesIn(bare), 0);
+}
+
 /* ============ 5. real artifacts: fidelity, budget, analysis ============ */
+head('4d. analyze() tells scripts apart from stylesheets');
+{
+  const fonts = ctx.analyze('<link href="https://fonts.googleapis.com/css2?family=X" rel="stylesheet">');
+  eq('google fonts is an external host', fonts.hosts.length, 1);
+  eq('google fonts is not an external script', fonts.extScripts.length, 0);
+
+  const cdn = ctx.analyze('<script src="https://cdn.tailwindcss.com"></' + 'script>');
+  eq('a CDN script counts as an external script', cdn.extScripts.length, 1);
+
+  const dyn = ctx.analyze('var s=document.createElement("script");s.src="https://evil.test/x.js";');
+  ok('a script built at runtime counts too', dyn.extScripts.length > 0);
+
+  const plain = ctx.analyze('<p>hello</p><style>b{color:red}</style>');
+  eq('a self-contained app has no external scripts', plain.extScripts.length, 0);
+}
+
 head('5. Real artifacts -- byte fidelity, budget, analysis');
 {
   const BUDGET = 64000;
