@@ -954,16 +954,19 @@ function renderKeyStatus(){
     return '<div class="chk"><div class="ico '+cls+'">'+ico+'</div><div><b>'+title+'</b>'+
            (body?'<span>'+body+'</span>':'')+'</div></div>';
   };
+  /* Keys are only ever shown in the panel, never in the status text, so the
+     same key cannot appear twice. */
+  var clearPanel=function(){ $('keyBackup').innerHTML=''; };
 
   if(!haveCrypto()){
-    keyReady=false;
+    keyReady=false; clearPanel();
     box.innerHTML=row('!','warn','Web Crypto unavailable',
       'Signing only works over https. Open this page from your site, not from a file.');
     hint.textContent=''; setActions(!!state.url); return;
   }
 
   if(!priv){
-    keyReady=false;
+    keyReady=false; clearPanel();
     box.innerHTML=row('!','warn','No signing key on this device',
       PUBLIC_KEY
         ? 'Tap <b>Import key</b> and paste it from your password manager. Without it you can edit apps here, but not publish them.'
@@ -974,32 +977,28 @@ function renderKeyStatus(){
   }
 
   publicFromPrivate(priv).then(function(pub){
+    hint.textContent='';
     if(!PUBLIC_KEY){
       keyReady=false;
       box.innerHTML=row('!','warn','Your site has no public key',
-        'You have a key on this device, but your site does not know about it yet. Paste the line below '+
-        'into <code>index.html</code>, then commit and push.');
-      hint.innerHTML=copyBox('Public key', 'paste into index.html, then commit and push',
-                             "var PUBLIC_KEY = '" + pub + "';");
-      wireCopyButtons(hint);
+        'You have a key on this device, but your site does not know about it yet. Copy the line '+
+        'below into <code>index.html</code>, then commit and push.');
+      showKeyPanel({pub:pub});
     }else if(pub !== PUBLIC_KEY){
       keyReady=false;
       box.innerHTML=row('!','warn','This key does not match your site',
-        'Your site trusts a different key, so anything you publish here would be refused. Either import the '+
-        'matching key, or \u2014 if you forked this from someone else \u2014 replace the public key in '+
-        '<code>index.html</code> with the one below.');
-      hint.innerHTML=copyBox('This device\u2019s public key', 'paste into index.html, then commit and push',
-                             "var PUBLIC_KEY = '" + pub + "';");
-      wireCopyButtons(hint);
+        'Your site trusts a different key, so anything you publish here would be refused. Either '+
+        'import the matching key, or \u2014 if you forked this from someone else \u2014 replace the '+
+        'public key in <code>index.html</code> with the one below.');
+      showKeyPanel({pub:pub});
     }else{
-      keyReady=true;
+      keyReady=true; clearPanel();
       box.innerHTML=row('\u2713','ok','Ready to publish',
         'Apps you publish are signed on this device and will run on your site. Nothing else will.');
-      hint.textContent='';
     }
     setActions(!!state.url && state.url.length<=BUDGET);
   }).catch(function(){
-    keyReady=false;
+    keyReady=false; clearPanel();
     box.innerHTML=row('!','warn','Stored key is unreadable',
       'Forget it and import a fresh copy from your backup.');
     setActions(!!state.url);
@@ -1015,7 +1014,7 @@ function wireKeyButtons(){
     }).then(function(r){
       storeKey(r[0]);
       renderKeyStatus(); scheduleRecompute();
-      showKeyBackup(r[0], r[1], true);
+      showKeyPanel({priv:r[0], pub:r[1], isNew:true});
     }).catch(function(e){ alert('Could not generate a key: '+(e&&e.message||e)); });
   };
 
@@ -1031,7 +1030,7 @@ function wireKeyButtons(){
   $('keyExport').onclick=function(){
     var priv=storedKey();
     if(!priv){ toast('No key on this device'); return; }
-    publicFromPrivate(priv).then(function(pub){ showKeyBackup(priv, pub, false); });
+    publicFromPrivate(priv).then(function(pub){ showKeyPanel({priv:priv, pub:pub}); });
   };
 
   $('keyForget').onclick=function(){
@@ -1068,15 +1067,23 @@ function wireCopyButtons(root){
   }
 }
 
-function showKeyBackup(priv, pub, isNew){
-  var box=$('keyBackup');
-  box.innerHTML=
-    (isNew ? '<b>New key created. Save it now.</b> ' : '<b>Your key</b> ')+
-    'Put the private key in your password manager. It is the only thing that can publish '+
-    'updates, and it cannot be recovered.'+
-    copyBox('Private key', 'secret, never share this', priv)+
-    copyBox('Public key', 'paste this line into index.html, then commit and push',
-            "var PUBLIC_KEY = '" + pub + "';");
+/* The one place keys are displayed.
+   opts.pub          public key, always shown
+   opts.priv         private key, only when the user asked to see it
+   opts.isNew        just created, so lead with "save it now"            */
+function showKeyPanel(opts){
+  var box=$('keyBackup'), html='';
+
+  if(opts.priv){
+    html += (opts.isNew ? '<b>New key created. Save it now.</b> ' : '<b>Your signing key.</b> ')+
+      'Put the private key in your password manager. It is the only thing that can publish '+
+      'updates, and it cannot be recovered.'+
+      copyBox('Private key', 'secret, never share this', opts.priv);
+  }
+  html += copyBox('Public key', 'paste this line into index.html, then commit and push',
+                  "var PUBLIC_KEY = '" + opts.pub + "';");
+
+  box.innerHTML = html;
   wireCopyButtons(box);
 }
 
