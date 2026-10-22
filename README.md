@@ -137,20 +137,20 @@ What signing does **not** do is hide your code. The payload is gzip and base64, 
 encryption. Anyone with a link can decode it, read your HTML, copy it, change it, and run it
 somewhere else. They just cannot run a changed version on your site.
 
-### Why no iframe
+### Why the app replaces the page instead of loading in an iframe
 
-The first version ran each app inside an iframe. That was wrong for two reasons.
+Two reasons.
 
 A sandboxed iframe without `allow-same-origin` gets what browsers call an opaque origin, and
 `localStorage` throws a `SecurityError` there. Any app that saves data breaks immediately.
-Adding `allow-same-origin` fixes storage but gives no protection, because the frame can
+Adding `allow-same-origin` makes storage work but gives no protection, because the frame can
 remove its own `sandbox` attribute and escape.
 
-The iframe also broke sliders on iOS. It added a second scrollable layer, so when you dragged
-an `<input type=range>` sideways, Safari scrolled the page instead of moving the slider.
+An iframe also adds a second scrollable layer, which breaks sliders on iOS. Drag an
+`<input type=range>` sideways and Safari scrolls the page instead of moving the slider.
 
-Using `document.write` avoids both problems. The app keeps the real site address, so storage
-works, and it gets the real page, so touch and scrolling behave normally.
+Writing the app straight into the page avoids both. It keeps the real site address, so
+storage works, and it gets the real page, so touch and scrolling behave normally.
 
 ---
 
@@ -168,18 +168,40 @@ works, and it gets the real page, so touch and scrolling behave normally.
 - **Back up your data.** Apps on your home screen are exempt from Safari's seven-day storage
   cleanup, but apps you only open in a browser tab are not. Use **Export all app data**.
 
-## Claude artifact support
+## Using apps from Claude
 
-Apps built on claude.ai can call `window.claude.use('db')` and `use('user')` for storage and
-identity. Those only exist inside claude.ai, so elsewhere `window.claude` is missing and
-those apps lose their sync feature or fall back to local-only.
+**Yes, Claude artifacts work.** Copy the HTML out of the chat, paste it in, publish. Nothing
+to change.
 
-sideload can provide a local stand-in, turned on by default. It implements `db.doc(path)`
-with `.get()`, `.set()`, `.update()` and `.delete()`, plus `user.id()`, stored in the app's
-own namespace. The app's sync code then works against your device.
+One thing worth knowing. Some artifacts save their data into Claude's own cloud storage
+instead of the browser's, by calling `window.claude`. That only exists on claude.ai, so
+outside it those apps would normally lose the ability to save anything. sideload supplies a
+local replacement automatically, so the app saves to your device instead and keeps working.
+You do not have to do anything, and there is no setting to change.
 
-It does not copy anything across. Data already saved in your Claude account stays there, and
-the stand-in starts empty.
+What it cannot do is bring data across. Anything already saved in your Claude account stays
+there, and the app starts empty on your device.
+
+**So when you ask Claude to build something for sideload, tell it to use `localStorage`.**
+That keeps the app self-contained, avoids the whole issue, and means the same file works
+anywhere.
+
+### Why not just publish the artifact on claude.ai?
+
+Publishing on claude.ai is one click, and for a quick share it is the easier option. The
+differences that matter:
+
+| | Published artifact | sideload |
+|---|---|---|
+| Works offline | No | Yes |
+| Where your data is kept | Anthropic's servers | your own device |
+| Saving data | needs the author on a paid plan | free |
+| Viewer needs an account | depends which share button you use | no |
+| Who controls the hosting | Anthropic | you |
+
+If you want a small private tool that keeps working regardless of your subscription, runs on
+a plane, and keeps your data on your phone, use this. If you want to show someone a demo in
+one click, publish the artifact.
 
 ## iOS details
 
@@ -210,14 +232,10 @@ node test/run.mjs                              # samples only
 node test/run.mjs ~/Downloads/some-app.html    # plus your own files
 ```
 
-92 checks. They cover round-trip accuracy with emoji, CJK, quotes, a literal `</script>` and
-200 KB inputs; every way of faking a signature, including swapping the app body, signing with
-a different key, flipping single bytes, and sending a link to an instance with no key at all;
-that verification happens before decompression; storage separation between apps; the Claude
-stand-in; and the size budget for real files.
+Checks that apps come back out byte for byte, that every way of faking a signature is
+refused, that apps cannot read each other's data, and that real files fit the size budget.
 
-The rest needs a real device: whether a long URL survives Add to Home Screen, whether iOS
-picks up the runtime name and icon, and whether the app launches full screen.
+Anything involving the home screen has to be tested on a real phone.
 
 ## Security
 
