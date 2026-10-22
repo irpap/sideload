@@ -797,6 +797,7 @@ function compilerHTML(){
       '<div class="actions">'+
         '<button class="btn sm" id="pasteBtn">Paste from clipboard</button>'+
         '<button class="btn sm" id="fileBtn">Choose .html file&hellip;</button>'+
+        '<button class="btn sm" id="copyHtmlBtn">Copy HTML</button>'+
         '<button class="btn sm" id="clearBtn">Clear</button>'+
         '<input type="file" id="file" accept=".html,.htm,text/html" hidden>'+
       '</div>'+
@@ -1257,6 +1258,18 @@ function showCompiler(){
     $('src').value=''; $('title').value=''; $('slug').value='';
     delete $('slug').dataset.touched; recompute();
   };
+  /* For handing an app back to Claude, or moving it to another device.
+     My apps > Edit loads the source into the box, then this copies it. */
+  $('copyHtmlBtn').onclick=function(){
+    var v=$('src').value;
+    if(!v.trim()){ toast('Nothing to copy'); return; }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(v).then(function(){
+        toast('Copied '+fmtBytes(te.encode(v).length)+' of HTML');
+      }).catch(function(){ $('src').select(); toast('Select all and copy'); });
+    } else { $('src').select(); toast('Select all and copy'); }
+  };
+
   $('pasteBtn').onclick=function(){
     if(!navigator.clipboard || !navigator.clipboard.readText){ toast('Clipboard read is not available here'); return; }
     navigator.clipboard.readText().then(function(t){
