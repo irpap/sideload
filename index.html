@@ -710,6 +710,7 @@ function compilerHTML(){
         '<button class="btn sm" id="keyForget">Forget key</button>'+
       '</div>'+
       '<div class="hint" id="keyHint"></div>'+
+      '<div class="hint" id="keyBackup"></div>'+
     '</div>'+
 
     '<div class="card">'+
@@ -978,14 +979,18 @@ function renderKeyStatus(){
       box.innerHTML=row('!','warn','Your site has no public key',
         'You have a key on this device, but your site does not know about it yet. Paste the line below '+
         'into <code>index.html</code>, then commit and push.');
-      hint.innerHTML='<b>Your public key</b><br><code style="overflow-wrap:anywhere">var PUBLIC_KEY = \''+esc(pub)+'\';</code>';
+      hint.innerHTML=copyBox('Public key', 'paste into index.html, then commit and push',
+                             "var PUBLIC_KEY = '" + pub + "';");
+      wireCopyButtons(hint);
     }else if(pub !== PUBLIC_KEY){
       keyReady=false;
       box.innerHTML=row('!','warn','This key does not match your site',
         'Your site trusts a different key, so anything you publish here would be refused. Either import the '+
         'matching key, or \u2014 if you forked this from someone else \u2014 replace the public key in '+
         '<code>index.html</code> with the one below.');
-      hint.innerHTML='<b>This device\u2019s public key</b><br><code style="overflow-wrap:anywhere">var PUBLIC_KEY = \''+esc(pub)+'\';</code>';
+      hint.innerHTML=copyBox('This device\u2019s public key', 'paste into index.html, then commit and push',
+                             "var PUBLIC_KEY = '" + pub + "';");
+      wireCopyButtons(hint);
     }else{
       keyReady=true;
       box.innerHTML=row('\u2713','ok','Ready to publish',
@@ -1033,27 +1038,46 @@ function wireKeyButtons(){
     if(!storedKey()){ toast('No key on this device'); return; }
     if(!confirm('Forget the signing key on this device?\n\nSaved app data is untouched, and existing links keep '+
        'working. But you will not be able to publish or update until you import it again.')) return;
-    forgetStoredKey(); renderKeyStatus(); scheduleRecompute(); toast('Key forgotten');
+    forgetStoredKey(); $('keyBackup').innerHTML=''; renderKeyStatus();
+    scheduleRecompute(); toast('Key forgotten');
   };
 }
 
+/* A read-only field with a Copy button. Used for both keys, so neither is
+   stuck being select-and-copy by hand on a phone. */
+var copyN = 0;
+function copyBox(label, note, value){
+  var id = '__cp' + (++copyN);
+  return '<div style="margin-top:11px">'+
+    '<b>'+esc(label)+'</b>'+(note ? ' <span style="color:var(--faint)">'+esc(note)+'</span>' : '')+
+    '<textarea readonly rows="2" style="font-size:11px;margin-top:5px" id="'+id+'">'+esc(value)+'</textarea>'+
+    '<button class="btn sm" data-copy="'+id+'">Copy</button></div>';
+}
+function wireCopyButtons(root){
+  var bs = root.querySelectorAll('[data-copy]');
+  for(var i=0;i<bs.length;i++){
+    (function(b){
+      b.onclick=function(){
+        var t=document.getElementById(b.getAttribute('data-copy'));
+        var done=function(){ b.textContent='Copied'; setTimeout(function(){ b.textContent='Copy'; },1600); };
+        if(navigator.clipboard && navigator.clipboard.writeText)
+          navigator.clipboard.writeText(t.value).then(done).catch(function(){ t.select(); b.textContent='Select and copy'; });
+        else { t.select(); b.textContent='Select and copy'; }
+      };
+    })(bs[i]);
+  }
+}
+
 function showKeyBackup(priv, pub, isNew){
-  var box=$('keyHint');
+  var box=$('keyBackup');
   box.innerHTML=
-    (isNew?'<b>New key created. Back it up now.</b><br>':'<b>Key backup</b><br>')+
-    'Save the private key in your password manager. It is the only way to publish updates, '+
-    'and it is not recoverable.<br><br>'+
-    '<b>Private key</b> (secret)<br>'+
-    '<textarea readonly rows="3" style="font-size:11px" id="kPriv">'+esc(priv)+'</textarea>'+
-    '<button class="btn sm" id="kCopyPriv">Copy private key</button><br><br>'+
-    '<b>Public key</b> \u2014 for <code>index.html</code><br>'+
-    '<textarea readonly rows="2" style="font-size:11px">var PUBLIC_KEY = \''+esc(pub)+'\';</textarea>';
-  var b=$('kCopyPriv');
-  if(b) b.onclick=function(){
-    var t=$('kPriv');
-    if(navigator.clipboard) navigator.clipboard.writeText(t.value).then(function(){ b.textContent='Copied'; });
-    else { t.select(); b.textContent='Select and copy'; }
-  };
+    (isNew ? '<b>New key created. Save it now.</b> ' : '<b>Your key</b> ')+
+    'Put the private key in your password manager. It is the only thing that can publish '+
+    'updates, and it cannot be recovered.'+
+    copyBox('Private key', 'secret, never share this', priv)+
+    copyBox('Public key', 'paste this line into index.html, then commit and push',
+            "var PUBLIC_KEY = '" + pub + "';");
+  wireCopyButtons(box);
 }
 
 function exportAll(){
