@@ -695,9 +695,8 @@ function compilerHTML(){
   '<div class="wrap">'+
     '<header>'+
       '<h1>sideload<span class="hash">#</span></h1>'+
-      '<div class="tag">Paste a single-file HTML app and get a link that contains it. '+
-        'Open the link in Safari and add it to your home screen. '+
-        'No deploy, no server, no account.</div>'+
+      '<div class="tag">Paste a single-file HTML app and get a link that contains the whole app. '+
+        'Open it in Safari and add it to your home screen.</div>'+
     '</header>'+
 
     '<div class="card" id="keyCard">'+
@@ -969,7 +968,7 @@ function renderKeyStatus(){
     keyReady=false; clearPanel();
     box.innerHTML=row('!','warn','No signing key on this device',
       PUBLIC_KEY
-        ? 'Tap <b>Import key</b> and paste it from your password manager. Without it you can edit apps here, but not publish them.'
+        ? 'Tap <b>Import key</b> and paste it from your password manager.'
         : 'Your site has no public key either. Tap <b>Create key</b> to start setup.');
     hint.innerHTML = PUBLIC_KEY ? '' : 'The README has the full setup steps.';
     setActions(!!state.url);
