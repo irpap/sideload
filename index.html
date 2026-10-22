@@ -36,7 +36,7 @@ body{
   -webkit-text-size-adjust:100%;
   padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
-/* ---------- compiler ---------- */
+/* ---------- styles for the compiler page ---------- */
 .wrap{max-width:720px;margin:0 auto;padding:22px 16px 64px}
 header{margin:6px 0 22px}
 h1{font-size:21px;margin:0;letter-spacing:-.3px;font-weight:650}
@@ -95,35 +95,12 @@ details{margin-top:4px}
 summary{cursor:pointer;font-size:13px;color:var(--dim);padding:4px 0}
 details p,details li{font-size:13px;color:var(--dim);line-height:1.6}
 details ul{padding-left:19px;margin:8px 0}
-.sw{display:flex;align-items:flex-start;gap:9px;margin-top:13px;font-size:13px;color:var(--fg)}
-.sw input{width:17px;height:17px;accent-color:var(--accent);flex:0 0 auto;margin:0}
-.sw span{display:block;color:var(--dim);font-size:12.5px;margin-top:2px}
-.sw input{margin-top:2px}
-.sw label{display:block;margin:0}
 .toast{
   position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);
   background:var(--fg);color:var(--bg);padding:9px 16px;border-radius:99px;font-size:13px;
   font-weight:550;z-index:99;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw
 }
 .toast.on{opacity:1}
-/* error overlay (runner) */
-#errs{position:fixed;left:0;right:0;bottom:0;z-index:2147483647;pointer-events:none;
-      padding:0 8px calc(8px + env(safe-area-inset-bottom));
-      font:13px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}
-.note{
-  pointer-events:auto;background:#1b1f27;color:#f2f4f8;border:1px solid #333a46;
-  border-left:3px solid var(--warn);border-radius:10px;padding:10px 12px;margin-top:7px;
-  box-shadow:0 8px 28px rgba(0,0,0,.45);display:flex;gap:10px;align-items:flex-start
-}
-.note.err{border-left-color:var(--bad)}
-.note .body{flex:1;min-width:0}
-.note b{display:block;font-size:13px;margin-bottom:2px}
-.note p{margin:0;color:#aeb6c4;font-size:12px;overflow-wrap:anywhere}
-.note pre{margin:5px 0 0;font:11px/1.4 ui-monospace,Menlo,monospace;color:#8e97a6;
-          white-space:pre-wrap;max-height:88px;overflow:auto}
-.note button{-webkit-appearance:none;appearance:none;background:#2a303b;border:0;color:#cfd6e2;
-             border-radius:6px;padding:4px 8px;font-size:11.5px;cursor:pointer;font-family:inherit}
-.note .x{background:transparent;color:#7d8696;font-size:17px;line-height:1;padding:0 2px}
 .fatal{max-width:560px;margin:14vh auto 0;padding:0 20px;text-align:left}
 .fatal h2{font-size:17px;margin:0 0 9px}
 .fatal p{color:var(--dim);font-size:14px}
@@ -137,9 +114,32 @@ details ul{padding-left:19px;margin:8px 0}
 (function(){
 'use strict';
 
-/* ====================================================================== *
- * sideload — run a single-file HTML app straight out of a URL fragment.
- * Everything is client-side. The fragment never reaches a server.
+/* ======================================================================
+ * sideload - run a single-file HTML app straight out of a URL fragment.
+ *
+ * Everything happens in the browser. The part of the URL after the # is
+ * never sent to a server, so an app's code and its data stay on the device.
+ *
+ * Reading order:
+ *
+ *   1  config          budget, namespaces, THIS SITE'S PUBLIC KEY
+ *   2  codec           gzip and base64url, both ways
+ *   3  crypto          ECDSA P-256: keys, signing, and the signing key
+ *                      stored on this device
+ *   4  sign / verify   the wire format, and the check that decides whether
+ *                      an app is allowed to run. Verification happens
+ *                      before anything is decompressed or rendered.
+ *   5  utilities       slugs, icons, formatting, this page's own storage
+ *   6  runner          decode a link, then become the app
+ *   7  compiler        the page you paste HTML into, plus the app list
+ *   8  guest prelude   code injected into every app before its own scripts:
+ *                      namespaced storage, a stand-in for Claude's storage
+ *                      API, and an error overlay. It lives in a string, so
+ *                      no editor will highlight or lint it.
+ *   9  boot            hash present -> run it; otherwise show the compiler
+ *
+ * Not minified, on purpose. The claim that your data never leaves the
+ * device is only worth anything if you can read the code that makes it.
  * ====================================================================== */
 
 var NS_PREFIX = '__sideload__';          /* app data:  __sideload__<slug>:<key>   */
@@ -163,7 +163,7 @@ var PUBLIC_KEY = 'BJ6EgtekXW_zKTVkBa9aWd9YdUi9S84xBBzKRI202KH9HZyh0Kj2U6jfRTuFaU
 var te = new TextEncoder(), td = new TextDecoder();
 var $ = function(id){ return document.getElementById(id); };
 
-/* ---------------------------------------------------------------- codec */
+/* ---------- 2. codec ---------------------------------------- */
 function gzipStr(str){
   var cs = new CompressionStream('gzip');
   var w = cs.writable.getWriter();
@@ -188,7 +188,7 @@ function fromB64url(s){
   for(var i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i);
   return out;
 }
-/* ---------------------------------------------------------------- crypto */
+/* ---------- 3. crypto --------------------------------------- */
 var EC     = {name:'ECDSA', namedCurve:'P-256'};
 var SIGALG = {name:'ECDSA', hash:'SHA-256'};
 
@@ -220,13 +220,13 @@ function publicFromPrivate(b64priv){
     });
 }
 
-/* ---- signing key for this device (compiler side) ---- */
+/* the signing key stored on this device */
 function storedKey(){ var v=selfGet('key',null); return typeof v==='string'?v:null; }
 function storeKey(b64){ selfSet('key', b64); }
 function forgetStoredKey(){ try{ localStorage.removeItem(SELF_NS+'key'); }catch(e){} }
 
-/* ------------------------------------------------- payload: sign and verify
- * Format:  <version>-<base64url signature>.<base64url gzip(json)>
+/* ---------- 4. sign and verify ------------------------------ */
+/* * Format:  <version>-<base64url signature>.<base64url gzip(json)>
  * The signature covers the exact gzip bytes that get decompressed, so what
  * was signed and what runs are the same bytes.                            */
 function encodeSigned(meta, privB64){
@@ -264,7 +264,7 @@ function decodeVerified(payload){
   });
 }
 
-/* ------------------------------------------------------------- utilities */
+/* ---------- 5. utilities ------------------------------------ */
 function slugify(s){
   return String(s||'').toLowerCase().normalize('NFKD')
     .replace(/[^a-z0-9\s-]/g,'').trim()
@@ -323,7 +323,7 @@ function toast(msg){
   setTimeout(function(){ t.classList.remove('on'); setTimeout(function(){ t.remove(); },260); },1900);
 }
 
-/* ------------------------------------------------------- own persistence */
+/* this page's own stored state */
 function selfGet(k,dflt){
   try{ var v=localStorage.getItem(SELF_NS+k); return v==null?dflt:JSON.parse(v); }
   catch(e){ return dflt; }
@@ -336,311 +336,6 @@ function recordApp(meta,payload){
   selfSet('apps', apps.slice(0,MAX_RECENT));
 }
 
-/* ====================================================================== *
- * Injected as the first script inside the app's <head>, so it runs before
- * any app code. It namespaces storage, shows errors, and can stand in for
- * the Claude artifact runtime.
- * ====================================================================== */
-var PRELUDE_BODY = `
-var NS = CFG.ns;
-var PAYLOAD = location.hash.replace(/^#/,'');
-
-/* --- namespaced Storage ----------------------------------------------- */
-function wrap(real){
-  function mine(){
-    var out=[];
-    for(var i=0;i<real.length;i++){
-      var k=real.key(i);
-      if(k && k.lastIndexOf(NS,0)===0) out.push(k);
-    }
-    return out;
-  }
-  var api={
-    getItem:function(k){ return real.getItem(NS+k); },
-    setItem:function(k,v){ real.setItem(NS+k,String(v)); },
-    removeItem:function(k){ real.removeItem(NS+k); },
-    clear:function(){ mine().forEach(function(k){ real.removeItem(k); }); },
-    key:function(i){ var m=mine()[i]; return m===undefined?null:m.slice(NS.length); }
-  };
-  return new Proxy({},{
-    get:function(t,p){
-      if(p==='length') return mine().length;
-      if(Object.prototype.hasOwnProperty.call(api,p)) return api[p];
-      if(typeof p==='symbol') return undefined;
-      return real.getItem(NS+p);
-    },
-    set:function(t,p,v){ real.setItem(NS+p,String(v)); return true; },
-    has:function(t,p){ return Object.prototype.hasOwnProperty.call(api,p) || real.getItem(NS+p)!==null; },
-    deleteProperty:function(t,p){ real.removeItem(NS+p); return true; },
-    ownKeys:function(){ return mine().map(function(k){ return k.slice(NS.length); }); },
-    getOwnPropertyDescriptor:function(t,p){
-      var v=real.getItem(NS+p);
-      if(v===null) return undefined;
-      return {value:v,writable:true,enumerable:true,configurable:true};
-    }
-  });
-}
-
-var installed=[];
-['localStorage','sessionStorage'].forEach(function(name){
-  var real;
-  try{ real=window[name]; if(!real) return; real.length; }
-  catch(e){
-    note('err','Storage blocked', name+' is unavailable: '+String(e&&e.message||e)+
-         '. Nothing this app saves will persist.');
-    return;
-  }
-  var proxy=wrap(real), ok=false;
-  try{
-    Object.defineProperty(window,name,{value:proxy,configurable:true,writable:true});
-    ok = window[name]===proxy;
-  }catch(e){}
-  if(!ok){ try{ delete window[name]; window[name]=proxy; ok=window[name]===proxy; }catch(e){} }
-  if(ok) installed.push(name);
-  else note('err','Storage isolation failed', name+' could not be namespaced, so this app '+
-            'may read or overwrite another sideloaded app data.');
-});
-
-/* --- Claude artifact-runtime stand-in --------------------------------- */
-if(CFG.claudeShim && !window.claude){
-  var mkDoc=function(path){
-    var k='__claudedb__:'+path;
-    function read(){
-      try{ var s=window.localStorage.getItem(k); return s==null?null:JSON.parse(s); }
-      catch(e){ return null; }
-    }
-    function write(o){ window.localStorage.setItem(k,JSON.stringify(o)); }
-    return {
-      path:path,
-      get:function(){ return Promise.resolve().then(function(){
-        var v=read();
-        return { exists:v!==null, id:path.split('/').pop(), data:function(){ return v; } };
-      }); },
-      set:function(o){ return Promise.resolve().then(function(){ write(o); }); },
-      update:function(o){ return Promise.resolve().then(function(){
-        var cur=read()||{};
-        Object.keys(o).forEach(function(kk){ cur[kk]=o[kk]; });
-        write(cur);
-      }); },
-      delete:function(){ return Promise.resolve().then(function(){
-        window.localStorage.removeItem(k);
-      }); }
-    };
-  };
-  var mkColl=function(p){
-    return {
-      doc:function(id){ return mkDoc(p+'/'+id); },
-      list:function(){ return Promise.resolve({docs:[]}); },
-      query:function(){ return Promise.resolve({docs:[]}); }
-    };
-  };
-  window.claude={
-    __sideload:true,
-    use:function(name){ return Promise.resolve().then(function(){
-      if(name==='db')   return { doc:mkDoc, collection:mkColl };
-      if(name==='user') return { id:function(){ return Promise.resolve('sideload-device'); },
-                                 name:function(){ return Promise.resolve('This device'); } };
-      return null;
-    }); }
-  };
-}
-
-/* --- show failures instead of leaving a blank screen ------------------ */
-var OV_CSS = ''
- + '.box{padding:0 8px calc(8px + env(safe-area-inset-bottom));'
- + 'font:13px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}'
- + '.n{pointer-events:auto;background:#1b1f27;color:#f2f4f8;border:1px solid #333a46;'
- + 'border-left:3px solid #f0b429;border-radius:10px;padding:10px 12px;margin-top:7px;'
- + 'box-shadow:0 8px 28px rgba(0,0,0,.45);display:flex;gap:10px;align-items:flex-start}'
- + '.n.err{border-left-color:#ff6b6b}'
- + '.n .b{flex:1;min-width:0}'
- + '.n b{display:block;font-size:13px;margin-bottom:2px}'
- + '.n p{margin:0;color:#aeb6c4;font-size:12px;overflow-wrap:anywhere}'
- + '.n pre{margin:6px 0 0;font:11px/1.4 ui-monospace,Menlo,monospace;color:#8e97a6;'
- + 'white-space:pre-wrap;max-height:160px;overflow:auto}'
- + '.n .b{cursor:pointer}'
- + '.n .more{margin-top:5px;font-size:11px;color:#8e97a6;text-decoration:underline}'
- + '.n .cp{margin-top:7px;-webkit-appearance:none;appearance:none;background:#2a303b;'
- + 'border:0;color:#cfd6e2;border-radius:6px;padding:5px 9px;font-size:11.5px;'
- + 'cursor:pointer;font-family:inherit}'
- + '.n .x{-webkit-appearance:none;appearance:none;background:transparent;border:0;'
- + 'color:#7d8696;font-size:17px;line-height:1;padding:0 2px;cursor:pointer}';
-
-var ovBox=null, pending=[], seenErr={}, resHosts=[], resUrls=[], resNode=null;
-
-function ensureBox(){
-  if(ovBox) return ovBox;
-  if(!document.body) return null;
-  var host=document.createElement('div');
-  host.setAttribute('data-sideload','notes');
-  host.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;pointer-events:none';
-  document.body.appendChild(host);
-  /* Use a shadow root so the app's CSS cannot restyle or hide these. */
-  var sr=host.attachShadow({mode:'open'});
-  sr.innerHTML='<style>'+OV_CSS+'</style><div class="box"></div>';
-  ovBox=sr.querySelector('.box');
-  return ovBox;
-}
-function paint(item){
-  var box=ensureBox(); if(!box) return null;
-  var n=document.createElement('div');
-  n.className='n'+(item.kind==='err'?' err':'');
-  n.innerHTML='<div class="b"><b></b><p></p>'+
-    (item.detail ? '<div class="more">Tap for details</div><pre hidden></pre>'+
-                   '<button class="cp" hidden>Copy details</button>' : '')+
-    '</div><button class="x" aria-label="Dismiss">&times;</button>';
-  n.querySelector('b').textContent=item.t;
-  n.querySelector('p').textContent=item.m;
-  n.querySelector('.x').onclick=function(ev){ ev.stopPropagation(); n.remove(); };
-
-  if(item.detail){
-    var pre=n.querySelector('pre'), cp=n.querySelector('.cp'), more=n.querySelector('.more');
-    pre.textContent=item.detail;
-    n.querySelector('.b').onclick=function(){
-      var open = !pre.hidden;
-      pre.hidden=open; cp.hidden=open;
-      more.textContent = open ? 'Tap for details' : 'Tap to hide';
-    };
-    cp.onclick=function(ev){
-      ev.stopPropagation();
-      var txt=item.t+': '+item.m+'\n'+item.detail;
-      if(navigator.clipboard && navigator.clipboard.writeText)
-        navigator.clipboard.writeText(txt).then(function(){
-          cp.textContent='Copied'; setTimeout(function(){ cp.textContent='Copy details'; },1600);
-        }).catch(function(){ cp.textContent='Select the text above'; });
-      else cp.textContent='Select the text above';
-    };
-  }
-  box.appendChild(n);
-  return n;
-}
-function flush(){
-  if(!document.body) return;
-  while(pending.length){ var it=pending.shift(); var el=paint(it); if(it.after) it.after(el); }
-}
-function note(kind,t,m,detail,after){
-  pending.push({kind:kind,t:t,m:m,detail:detail,after:after});
-  flush();
-}
-document.addEventListener('DOMContentLoaded',flush);
-window.addEventListener('load',flush);
-
-window.addEventListener('error',function(e){
-  var t=e.target;
-  if(t && t!==window && (t.src||t.href)){
-    var u=String(t.src||t.href), h;
-    try{ h=new URL(u,location.href).host; }catch(_){ h=u; }
-    if(resHosts.indexOf(h)<0) resHosts.push(h);
-    var msg=resHosts.join(', ')+' could not be reached, so fonts or styles may look wrong. '+
-            'This app needs a network connection for them.';
-    resUrls.push(u);
-    if(resNode){
-      var pp=resNode.querySelector('p'); if(pp) pp.textContent=msg;
-      var rp=resNode.querySelector('pre'); if(rp) rp.textContent=resUrls.join('\n');
-    }
-    else note('','Offline resources',msg,resUrls.join('\n'),function(el){ resNode=el; });
-    return;
-  }
-  /* Not an ErrorEvent at all: a failed resource whose element had no src or
-     href. Nothing useful to report, and it is not a script error. */
-  if(e.message===undefined && e.lineno===undefined && e.filename===undefined){
-    try{ console.warn('[sideload] resource failed, no URL available', e.target); }catch(_){}
-    return;
-  }
-
-  var msg=String(e.message||'');
-
-  /* "Script error." is all a browser will say when the failing script came
-     from another site. If this app loads no outside scripts, the error cannot
-     be the app's -- it is almost always a browser extension, which injects
-     scripts into the page and can trip over document.write replacing the
-     document underneath it. Reporting it would be a false alarm. */
-  if(msg==='Script error.' && !CFG.extScripts){
-    try{ console.warn('[sideload] ignoring a cross-origin "Script error." - this app '+
-                      'loads no external scripts, so it is not from the app '+
-                      '(most likely a browser extension).'); }catch(_){}
-    return;
-  }
-
-  var key=msg+'@'+e.lineno+':'+e.colno;
-  if(seenErr[key]) return; seenErr[key]=1;
-  var where=e.lineno?(' (line '+e.lineno+(e.colno?', col '+e.colno:'')+')'):'';
-  var kind='err', title='App error';
-
-  if(!msg) msg='The browser reported an error but gave no message.';
-  else if(msg==='Script error.'){
-    kind=''; title='Error in an external script';
-    msg='One of the outside scripts this app loads threw an error. Browsers hide the '+
-        'details for scripts from another site, so there is nothing more to show.';
-  }
-  var d=[];
-  d.push('message: '+(e.message||'(none)'));
-  if(e.filename) d.push('source:  '+e.filename);
-  if(e.lineno)   d.push('line:    '+e.lineno+(e.colno?':'+e.colno:''));
-  if(e.error && e.error.name) d.push('type:    '+e.error.name);
-  d.push('app:     '+CFG.slug);
-  if(e.error && e.error.stack) d.push('\n'+String(e.error.stack).slice(0,900));
-  note(kind,title, msg+where, d.join('\n'));
-},true);
-
-window.addEventListener('unhandledrejection',function(e){
-  var r=e.reason;
-  var key='rej:'+String(r&&r.message||r);
-  if(seenErr[key]) return; seenErr[key]=1;
-  var d=['message: '+String((r&&r.message)||r)];
-  if(r && r.name) d.push('type:    '+r.name);
-  d.push('app:     '+CFG.slug);
-  if(r && r.stack) d.push('\n'+String(r.stack).slice(0,900));
-  note('err','Unhandled promise rejection', String((r&&r.message)||r), d.join('\n'));
-});
-
-/* --- navigation guards ------------------------------------------------ */
-document.addEventListener('click',function(e){
-  var n=e.target;
-  var a=(n && n.closest) ? n.closest('a[href]') : null;
-  if(!a) return;
-  var h=a.getAttribute('href')||'';
-  if(/^https?:/i.test(h)){
-    /* Navigating away would discard the app, because it only exists in this URL. */
-    if(!a.target){ a.target='_blank'; a.rel='noopener noreferrer'; }
-    return;
-  }
-  if(h.charAt(0)==='#'){
-    /* A link to #something would replace the payload and lose the app, so
-       scroll to the target instead of letting the # change. */
-    e.preventDefault();
-    var id=h.slice(1);
-    if(!id){ window.scrollTo(0,0); return; }
-    var t=document.getElementById(id)||document.getElementsByName(id)[0];
-    if(t && t.scrollIntoView) t.scrollIntoView({behavior:'smooth',block:'start'});
-  }
-},true);
-
-/* Fallback: if something changed the # anyway, put the payload back. */
-if(PAYLOAD){
-  window.addEventListener('hashchange',function(){
-    if(location.hash.replace(/^#/,'')!==PAYLOAD){
-      try{ history.replaceState(null,'','#'+PAYLOAD); }catch(e){}
-    }
-  });
-}
-
-/* --- make sliders draggable ------------------------------------------ */
-/* Without this, dragging a range input sideways scrolls the page and the
-   value never changes. Added late so it takes effect over the app's own CSS at
-   equal specificity. No !important, so an app that sets touch-action wins. */
-(function(){
-  function addFix(){
-    if(!document.head && !document.body) return;
-    var st=document.createElement('style');
-    st.setAttribute('data-sideload','touch');
-    st.textContent='input[type=range]{touch-action:none}';
-    (document.head||document.body).appendChild(st);
-  }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',addFix);
-  else addFix();
-})();
-`;
 
 function buildPrelude(slug, opts){
   var cfg = JSON.stringify({
@@ -663,7 +358,7 @@ function injectPrelude(html, script){
   return script+html;
 }
 
-/* -------------------------------------------------------------- analysis */
+/* what does this app need: external files, storage, modules */
 function analyze(html){
   html = html||'';
   var ext=[], m, re=/(?:src|href)\s*=\s*["'](https?:\/\/[^"']+)["']/gi;
@@ -694,9 +389,7 @@ function analyze(html){
   };
 }
 
-/* ====================================================================== *
- * RUNNER
- * ====================================================================== */
+/* ---------- 6. runner --------------------------------------- */
 function fatal(title, detail){
   document.body.className='';
   $('root').innerHTML =
@@ -764,9 +457,7 @@ function runApp(payload){
   });
 }
 
-/* ====================================================================== *
- * COMPILER + LAUNCHER
- * ====================================================================== */
+/* ---------- 7. compiler and app list ------------------------ */
 var state={ payload:null, url:null, raw:0, gz:0 };
 
 function compilerHTML(){
@@ -1024,7 +715,7 @@ function setActions(on){
   ['openBtn','copyBtn'].forEach(function(id){ $(id).disabled = !on || !keyReady; });
 }
 
-/* ---------------------------------------------------------- key management */
+/* key management */
 var keyReady = false;      /* a key is present AND matches this site's public key */
 
 function renderKeyStatus(){
@@ -1299,7 +990,287 @@ function showCompiler(){
   recompute();
 }
 
-/* ------------------------------------------------------------------ boot */
+/* ---------- 8. guest prelude -------------------------------- */
+/* Injected as the first script inside the app's <head>, so it runs before
+ * any app code. It namespaces storage, shows errors, and can stand in for
+ * the Claude artifact runtime.
+ * ====================================================================== */
+var PRELUDE_BODY = `
+var NS = CFG.ns;
+
+/* --- namespaced Storage ----------------------------------------------- */
+function wrap(real){
+  function mine(){
+    var out=[];
+    for(var i=0;i<real.length;i++){
+      var k=real.key(i);
+      if(k && k.lastIndexOf(NS,0)===0) out.push(k);
+    }
+    return out;
+  }
+  var api={
+    getItem:function(k){ return real.getItem(NS+k); },
+    setItem:function(k,v){ real.setItem(NS+k,String(v)); },
+    removeItem:function(k){ real.removeItem(NS+k); },
+    clear:function(){ mine().forEach(function(k){ real.removeItem(k); }); },
+    key:function(i){ var m=mine()[i]; return m===undefined?null:m.slice(NS.length); }
+  };
+  return new Proxy({},{
+    get:function(t,p){
+      if(p==='length') return mine().length;
+      if(Object.prototype.hasOwnProperty.call(api,p)) return api[p];
+      if(typeof p==='symbol') return undefined;
+      return real.getItem(NS+p);
+    },
+    set:function(t,p,v){ real.setItem(NS+p,String(v)); return true; },
+    has:function(t,p){ return Object.prototype.hasOwnProperty.call(api,p) || real.getItem(NS+p)!==null; },
+    deleteProperty:function(t,p){ real.removeItem(NS+p); return true; },
+    ownKeys:function(){ return mine().map(function(k){ return k.slice(NS.length); }); },
+    getOwnPropertyDescriptor:function(t,p){
+      var v=real.getItem(NS+p);
+      if(v===null) return undefined;
+      return {value:v,writable:true,enumerable:true,configurable:true};
+    }
+  });
+}
+
+var installed=[];
+['localStorage','sessionStorage'].forEach(function(name){
+  var real;
+  try{ real=window[name]; if(!real) return; real.length; }
+  catch(e){
+    note('err','Storage blocked', name+' is unavailable: '+String(e&&e.message||e)+
+         '. Nothing this app saves will persist.');
+    return;
+  }
+  var proxy=wrap(real), ok=false;
+  try{
+    Object.defineProperty(window,name,{value:proxy,configurable:true,writable:true});
+    ok = window[name]===proxy;
+  }catch(e){}
+  if(!ok){ try{ delete window[name]; window[name]=proxy; ok=window[name]===proxy; }catch(e){} }
+  if(ok) installed.push(name);
+  else note('err','Storage isolation failed', name+' could not be namespaced, so this app '+
+            'may read or overwrite another sideloaded app data.');
+});
+
+/* --- Claude artifact-runtime stand-in --------------------------------- */
+if(CFG.claudeShim && !window.claude){
+  var mkDoc=function(path){
+    var k='__claudedb__:'+path;
+    function read(){
+      try{ var s=window.localStorage.getItem(k); return s==null?null:JSON.parse(s); }
+      catch(e){ return null; }
+    }
+    function write(o){ window.localStorage.setItem(k,JSON.stringify(o)); }
+    return {
+      path:path,
+      get:function(){ return Promise.resolve().then(function(){
+        var v=read();
+        return { exists:v!==null, id:path.split('/').pop(), data:function(){ return v; } };
+      }); },
+      set:function(o){ return Promise.resolve().then(function(){ write(o); }); },
+      update:function(o){ return Promise.resolve().then(function(){
+        var cur=read()||{};
+        Object.keys(o).forEach(function(kk){ cur[kk]=o[kk]; });
+        write(cur);
+      }); },
+      delete:function(){ return Promise.resolve().then(function(){
+        window.localStorage.removeItem(k);
+      }); }
+    };
+  };
+  var mkColl=function(p){
+    return {
+      doc:function(id){ return mkDoc(p+'/'+id); },
+      list:function(){ return Promise.resolve({docs:[]}); },
+      query:function(){ return Promise.resolve({docs:[]}); }
+    };
+  };
+  window.claude={
+    __sideload:true,
+    use:function(name){ return Promise.resolve().then(function(){
+      if(name==='db')   return { doc:mkDoc, collection:mkColl };
+      if(name==='user') return { id:function(){ return Promise.resolve('sideload-device'); },
+                                 name:function(){ return Promise.resolve('This device'); } };
+      return null;
+    }); }
+  };
+}
+
+/* --- show failures instead of leaving a blank screen ------------------ */
+var OV_CSS = ''
+ + '.box{padding:0 8px calc(8px + env(safe-area-inset-bottom));'
+ + 'font:13px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}'
+ + '.n{pointer-events:auto;background:#1b1f27;color:#f2f4f8;border:1px solid #333a46;'
+ + 'border-left:3px solid #f0b429;border-radius:10px;padding:10px 12px;margin-top:7px;'
+ + 'box-shadow:0 8px 28px rgba(0,0,0,.45);display:flex;gap:10px;align-items:flex-start}'
+ + '.n.err{border-left-color:#ff6b6b}'
+ + '.n .b{flex:1;min-width:0}'
+ + '.n b{display:block;font-size:13px;margin-bottom:2px}'
+ + '.n p{margin:0;color:#aeb6c4;font-size:12px;overflow-wrap:anywhere}'
+ + '.n pre{margin:6px 0 0;font:11px/1.4 ui-monospace,Menlo,monospace;color:#8e97a6;'
+ + 'white-space:pre-wrap;max-height:160px;overflow:auto}'
+ + '.n .b{cursor:pointer}'
+ + '.n .more{margin-top:5px;font-size:11px;color:#8e97a6;text-decoration:underline}'
+ + '.n .cp{margin-top:7px;-webkit-appearance:none;appearance:none;background:#2a303b;'
+ + 'border:0;color:#cfd6e2;border-radius:6px;padding:5px 9px;font-size:11.5px;'
+ + 'cursor:pointer;font-family:inherit}'
+ + '.n .x{-webkit-appearance:none;appearance:none;background:transparent;border:0;'
+ + 'color:#7d8696;font-size:17px;line-height:1;padding:0 2px;cursor:pointer}';
+
+var ovBox=null, pending=[], seenErr={}, resHosts=[], resUrls=[], resNode=null;
+
+function ensureBox(){
+  if(ovBox) return ovBox;
+  if(!document.body) return null;
+  var host=document.createElement('div');
+  host.setAttribute('data-sideload','notes');
+  host.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;pointer-events:none';
+  document.body.appendChild(host);
+  /* Use a shadow root so the app's CSS cannot restyle or hide these. */
+  var sr=host.attachShadow({mode:'open'});
+  sr.innerHTML='<style>'+OV_CSS+'</style><div class="box"></div>';
+  ovBox=sr.querySelector('.box');
+  return ovBox;
+}
+function paint(item){
+  var box=ensureBox(); if(!box) return null;
+  var n=document.createElement('div');
+  n.className='n'+(item.kind==='err'?' err':'');
+  n.innerHTML='<div class="b"><b></b><p></p>'+
+    (item.detail ? '<div class="more">Tap for details</div><pre hidden></pre>'+
+                   '<button class="cp" hidden>Copy details</button>' : '')+
+    '</div><button class="x" aria-label="Dismiss">&times;</button>';
+  n.querySelector('b').textContent=item.t;
+  n.querySelector('p').textContent=item.m;
+  n.querySelector('.x').onclick=function(ev){ ev.stopPropagation(); n.remove(); };
+
+  if(item.detail){
+    var pre=n.querySelector('pre'), cp=n.querySelector('.cp'), more=n.querySelector('.more');
+    pre.textContent=item.detail;
+    n.querySelector('.b').onclick=function(){
+      var open = !pre.hidden;
+      pre.hidden=open; cp.hidden=open;
+      more.textContent = open ? 'Tap for details' : 'Tap to hide';
+    };
+    cp.onclick=function(ev){
+      ev.stopPropagation();
+      var txt=item.t+': '+item.m+'\n'+item.detail;
+      if(navigator.clipboard && navigator.clipboard.writeText)
+        navigator.clipboard.writeText(txt).then(function(){
+          cp.textContent='Copied'; setTimeout(function(){ cp.textContent='Copy details'; },1600);
+        }).catch(function(){ cp.textContent='Select the text above'; });
+      else cp.textContent='Select the text above';
+    };
+  }
+  box.appendChild(n);
+  return n;
+}
+function flush(){
+  if(!document.body) return;
+  while(pending.length){ var it=pending.shift(); var el=paint(it); if(it.after) it.after(el); }
+}
+function note(kind,t,m,detail,after){
+  pending.push({kind:kind,t:t,m:m,detail:detail,after:after});
+  flush();
+}
+document.addEventListener('DOMContentLoaded',flush);
+window.addEventListener('load',flush);
+
+window.addEventListener('error',function(e){
+  var t=e.target;
+  if(t && t!==window && (t.src||t.href)){
+    var u=String(t.src||t.href), h;
+    try{ h=new URL(u,location.href).host; }catch(_){ h=u; }
+    if(resHosts.indexOf(h)<0) resHosts.push(h);
+    var msg=resHosts.join(', ')+' could not be reached, so fonts or styles may look wrong. '+
+            'This app needs a network connection for them.';
+    resUrls.push(u);
+    if(resNode){
+      var pp=resNode.querySelector('p'); if(pp) pp.textContent=msg;
+      var rp=resNode.querySelector('pre'); if(rp) rp.textContent=resUrls.join('\n');
+    }
+    else note('','Offline resources',msg,resUrls.join('\n'),function(el){ resNode=el; });
+    return;
+  }
+  /* Not an ErrorEvent at all: a failed resource whose element had no src or
+     href. Nothing useful to report, and it is not a script error. */
+  if(e.message===undefined && e.lineno===undefined && e.filename===undefined){
+    try{ console.warn('[sideload] resource failed, no URL available', e.target); }catch(_){}
+    return;
+  }
+
+  var msg=String(e.message||'');
+
+  /* "Script error." is all a browser will say when the failing script came
+     from another site. If this app loads no outside scripts, the error cannot
+     be the app's -- it is almost always a browser extension, which injects
+     scripts into the page and can trip over document.write replacing the
+     document underneath it. Reporting it would be a false alarm. */
+  if(msg==='Script error.' && !CFG.extScripts){
+    try{ console.warn('[sideload] ignoring a cross-origin "Script error." - this app '+
+                      'loads no external scripts, so it is not from the app '+
+                      '(most likely a browser extension).'); }catch(_){}
+    return;
+  }
+
+  var key=msg+'@'+e.lineno+':'+e.colno;
+  if(seenErr[key]) return; seenErr[key]=1;
+  var where=e.lineno?(' (line '+e.lineno+(e.colno?', col '+e.colno:'')+')'):'';
+  var kind='err', title='App error';
+
+  if(!msg) msg='The browser reported an error but gave no message.';
+  else if(msg==='Script error.'){
+    kind=''; title='Error in an external script';
+    msg='One of the outside scripts this app loads threw an error. Browsers hide the '+
+        'details for scripts from another site, so there is nothing more to show.';
+  }
+  var d=[];
+  d.push('message: '+(e.message||'(none)'));
+  if(e.filename) d.push('source:  '+e.filename);
+  if(e.lineno)   d.push('line:    '+e.lineno+(e.colno?':'+e.colno:''));
+  if(e.error && e.error.name) d.push('type:    '+e.error.name);
+  d.push('app:     '+CFG.slug);
+  if(e.error && e.error.stack) d.push('\n'+String(e.error.stack).slice(0,900));
+  note(kind,title, msg+where, d.join('\n'));
+},true);
+
+window.addEventListener('unhandledrejection',function(e){
+  var r=e.reason;
+  var key='rej:'+String(r&&r.message||r);
+  if(seenErr[key]) return; seenErr[key]=1;
+  var d=['message: '+String((r&&r.message)||r)];
+  if(r && r.name) d.push('type:    '+r.name);
+  d.push('app:     '+CFG.slug);
+  if(r && r.stack) d.push('\n'+String(r.stack).slice(0,900));
+  note('err','Unhandled promise rejection', String((r&&r.message)||r), d.join('\n'));
+});
+
+/* --- navigation guards ------------------------------------------------ */
+document.addEventListener('click',function(e){
+  var n=e.target;
+  var a=(n && n.closest) ? n.closest('a[href]') : null;
+  if(!a) return;
+  var h=a.getAttribute('href')||'';
+  if(/^https?:/i.test(h)){
+    /* Navigating away would discard the app, because it only exists in this URL. */
+    if(!a.target){ a.target='_blank'; a.rel='noopener noreferrer'; }
+    return;
+  }
+  if(h.charAt(0)==='#'){
+    /* A link to #something would replace the payload and lose the app, so
+       scroll to the target instead of letting the # change. */
+    e.preventDefault();
+    var id=h.slice(1);
+    if(!id){ window.scrollTo(0,0); return; }
+    var t=document.getElementById(id)||document.getElementsByName(id)[0];
+    if(t && t.scrollIntoView) t.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+},true);
+`;
+
+/* ---------- 9. boot ----------------------------------------- */
 function boot(){
   if(typeof CompressionStream!=='function' || typeof DecompressionStream!=='function'){
     fatal('This browser is too old',

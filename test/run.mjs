@@ -348,16 +348,6 @@ head('4b. Runner guards');
   ok('error handler installed', !!direct.listeners.window.error);
   ok('rejection handler installed', !!direct.listeners.window.unhandledrejection);
   ok('click guard installed', !!direct.listeners.document.click);
-  ok('hash guard installed', !!direct.listeners.window.hashchange);
-
-  const sl = direct.appended.find(
-    (e) => e.getAttribute && e.getAttribute('data-sideload') === 'touch');
-  ok('slider touch-action fix injected', !!sl,
-     JSON.stringify(direct.appended.map((e) => e.tagName)));
-  ok('touch-action targets range inputs',
-     !!sl && /input\[type=range\]\s*\{\s*touch-action:\s*none\s*\}/.test(sl.textContent),
-     sl && sl.textContent);
-  ok('touch fix avoids !important', !!sl && !/!important/.test(sl.textContent));
 
 }
 
