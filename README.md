@@ -173,21 +173,12 @@ storage works, and it gets the real page, so touch and scrolling behave normally
 
 ## Using apps from Claude
 
-**Yes, Claude artifacts work.** Copy the HTML out of the chat, paste it in, publish. Nothing
-to change.
+Claude artifacts work as they are. Copy the HTML out of the chat, paste it in, publish.
 
-One thing worth knowing. Some artifacts save their data into Claude's own cloud storage
-instead of the browser's, by calling `window.claude`. That only exists on claude.ai, so
-outside it those apps would normally lose the ability to save anything. sideload supplies a
-local replacement automatically, so the app saves to your device instead and keeps working.
-You do not have to do anything, and there is no setting to change.
-
-What it cannot do is bring data across. Anything already saved in your Claude account stays
-there, and the app starts empty on your device.
-
-**So when you ask Claude to build something for sideload, tell it to use `localStorage`.**
-That keeps the app self-contained, avoids the whole issue, and means the same file works
-anywhere.
+Some artifacts save data to Claude's own cloud storage by calling `window.claude`, which only
+exists on claude.ai. sideload swaps that for `localStorage` automatically, so those apps keep
+working and save to your device instead. Anything already in your Claude account stays there,
+so the app starts empty.
 
 ### Why not just publish the artifact on claude.ai?
 
@@ -254,9 +245,9 @@ things follow from it:
 
 - Keep sideload on a GitHub account where you do not host anything with real secrets, because
   one `github.io` address covers every repo you publish.
-- If that bothers you, giving each app its own subdomain fixes it properly. See `DESIGN.md`.
-  It needs wildcard DNS, which costs around $3 a month, and it protects you from your own
-  code rather than from anyone else.
+- Giving each app its own subdomain would fix this properly, since browsers keep storage
+  separate per address. That needs wildcard DNS, which is not free on any host, and it
+  protects you from your own code rather than from anyone else.
 
 ## Troubleshooting
 
