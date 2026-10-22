@@ -956,7 +956,7 @@ function renderKeyStatus(){
   };
   /* Keys are only ever shown in the panel, never in the status text, so the
      same key cannot appear twice. */
-  var clearPanel=function(){ $('keyBackup').innerHTML=''; };
+  var clearPanel=hideKeyPanel;
 
   if(!haveCrypto()){
     keyReady=false; clearPanel();
@@ -1028,6 +1028,7 @@ function wireKeyButtons(){
   };
 
   $('keyExport').onclick=function(){
+    if($('keyBackup').innerHTML){ hideKeyPanel(); return; }
     var priv=storedKey();
     if(!priv){ toast('No key on this device'); return; }
     publicFromPrivate(priv).then(function(pub){ showKeyPanel({priv:priv, pub:pub}); });
@@ -1037,7 +1038,7 @@ function wireKeyButtons(){
     if(!storedKey()){ toast('No key on this device'); return; }
     if(!confirm('Forget the signing key on this device?\n\nSaved app data is untouched, and existing links keep '+
        'working. But you will not be able to publish or update until you import it again.')) return;
-    forgetStoredKey(); $('keyBackup').innerHTML=''; renderKeyStatus();
+    forgetStoredKey(); hideKeyPanel(); renderKeyStatus();
     scheduleRecompute(); toast('Key forgotten');
   };
 }
@@ -1080,11 +1081,17 @@ function showKeyPanel(opts){
       'updates, and it cannot be recovered.'+
       copyBox('Private key', 'secret, never share this', opts.priv);
   }
-  html += copyBox('Public key', 'paste this line into index.html, then commit and push',
-                  "var PUBLIC_KEY = '" + opts.pub + "';");
+  html += copyBox('Public key',
+                  "goes inside the quotes of var PUBLIC_KEY in index.html, then commit and push",
+                  opts.pub);
 
   box.innerHTML = html;
   wireCopyButtons(box);
+  var b=$('keyExport'); if(b) b.textContent='Hide key';
+}
+function hideKeyPanel(){
+  $('keyBackup').innerHTML='';
+  var b=$('keyExport'); if(b) b.textContent='Show key';
 }
 
 function exportAll(){
