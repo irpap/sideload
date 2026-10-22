@@ -456,12 +456,17 @@ var OV_CSS = ''
  + '.n .b{flex:1;min-width:0}'
  + '.n b{display:block;font-size:13px;margin-bottom:2px}'
  + '.n p{margin:0;color:#aeb6c4;font-size:12px;overflow-wrap:anywhere}'
- + '.n pre{margin:5px 0 0;font:11px/1.4 ui-monospace,Menlo,monospace;color:#8e97a6;'
- + 'white-space:pre-wrap;max-height:88px;overflow:auto}'
+ + '.n pre{margin:6px 0 0;font:11px/1.4 ui-monospace,Menlo,monospace;color:#8e97a6;'
+ + 'white-space:pre-wrap;max-height:160px;overflow:auto}'
+ + '.n .b{cursor:pointer}'
+ + '.n .more{margin-top:5px;font-size:11px;color:#8e97a6;text-decoration:underline}'
+ + '.n .cp{margin-top:7px;-webkit-appearance:none;appearance:none;background:#2a303b;'
+ + 'border:0;color:#cfd6e2;border-radius:6px;padding:5px 9px;font-size:11.5px;'
+ + 'cursor:pointer;font-family:inherit}'
  + '.n .x{-webkit-appearance:none;appearance:none;background:transparent;border:0;'
  + 'color:#7d8696;font-size:17px;line-height:1;padding:0 2px;cursor:pointer}';
 
-var ovBox=null, pending=[], seenErr={}, resHosts=[], resNode=null;
+var ovBox=null, pending=[], seenErr={}, resHosts=[], resUrls=[], resNode=null;
 
 function ensureBox(){
   if(ovBox) return ovBox;
@@ -480,13 +485,32 @@ function paint(item){
   var box=ensureBox(); if(!box) return null;
   var n=document.createElement('div');
   n.className='n'+(item.kind==='err'?' err':'');
-  var html='<div class="b"><b></b><p></p>'+(item.pre?'<pre></pre>':'')+'</div>'+
-           '<button class="x" aria-label="Dismiss">&times;</button>';
-  n.innerHTML=html;
+  n.innerHTML='<div class="b"><b></b><p></p>'+
+    (item.detail ? '<div class="more">Tap for details</div><pre hidden></pre>'+
+                   '<button class="cp" hidden>Copy details</button>' : '')+
+    '</div><button class="x" aria-label="Dismiss">&times;</button>';
   n.querySelector('b').textContent=item.t;
   n.querySelector('p').textContent=item.m;
-  if(item.pre) n.querySelector('pre').textContent=item.pre;
-  n.querySelector('.x').onclick=function(){ n.remove(); };
+  n.querySelector('.x').onclick=function(ev){ ev.stopPropagation(); n.remove(); };
+
+  if(item.detail){
+    var pre=n.querySelector('pre'), cp=n.querySelector('.cp'), more=n.querySelector('.more');
+    pre.textContent=item.detail;
+    n.querySelector('.b').onclick=function(){
+      var open = !pre.hidden;
+      pre.hidden=open; cp.hidden=open;
+      more.textContent = open ? 'Tap for details' : 'Tap to hide';
+    };
+    cp.onclick=function(ev){
+      ev.stopPropagation();
+      var txt=item.t+': '+item.m+'\n'+item.detail;
+      if(navigator.clipboard && navigator.clipboard.writeText)
+        navigator.clipboard.writeText(txt).then(function(){
+          cp.textContent='Copied'; setTimeout(function(){ cp.textContent='Copy details'; },1600);
+        }).catch(function(){ cp.textContent='Select the text above'; });
+      else cp.textContent='Select the text above';
+    };
+  }
   box.appendChild(n);
   return n;
 }
@@ -494,8 +518,8 @@ function flush(){
   if(!document.body) return;
   while(pending.length){ var it=pending.shift(); var el=paint(it); if(it.after) it.after(el); }
 }
-function note(kind,t,m,pre,after){
-  pending.push({kind:kind,t:t,m:m,pre:pre,after:after});
+function note(kind,t,m,detail,after){
+  pending.push({kind:kind,t:t,m:m,detail:detail,after:after});
   flush();
 }
 document.addEventListener('DOMContentLoaded',flush);
@@ -509,23 +533,42 @@ window.addEventListener('error',function(e){
     if(resHosts.indexOf(h)<0) resHosts.push(h);
     var msg=resHosts.join(', ')+' could not be reached, so fonts or styles may look wrong. '+
             'This app needs a network connection for them.';
-    if(resNode){ var pp=resNode.querySelector('p'); if(pp) pp.textContent=msg; }
-    else note('','Offline resources',msg,null,function(el){ resNode=el; });
+    resUrls.push(u);
+    if(resNode){
+      var pp=resNode.querySelector('p'); if(pp) pp.textContent=msg;
+      var rp=resNode.querySelector('pre'); if(rp) rp.textContent=resUrls.join('\n');
+    }
+    else note('','Offline resources',msg,resUrls.join('\n'),function(el){ resNode=el; });
     return;
   }
   var key=String(e.message)+'@'+e.lineno+':'+e.colno;
   if(seenErr[key]) return; seenErr[key]=1;
   var where=e.lineno?(' (line '+e.lineno+(e.colno?', col '+e.colno:'')+')'):'';
-  note('err','App error', String(e.message||'Unknown error')+where,
-       (e.error&&e.error.stack)?String(e.error.stack).slice(0,700):null);
+  var msg=String(e.message||'');
+  /* A cross-origin script reports only "Script error." with nothing else. Say
+     so, rather than showing a title with no explanation under it. */
+  if(!msg) msg='The browser reported an error but gave no message.';
+  else if(msg==='Script error.')
+    msg='Script error \u2014 the browser hides details for scripts loaded from another site.';
+  var d=[];
+  d.push('message: '+(e.message||'(none)'));
+  if(e.filename) d.push('source:  '+e.filename);
+  if(e.lineno)   d.push('line:    '+e.lineno+(e.colno?':'+e.colno:''));
+  if(e.error && e.error.name) d.push('type:    '+e.error.name);
+  d.push('app:     '+CFG.slug);
+  if(e.error && e.error.stack) d.push('\n'+String(e.error.stack).slice(0,900));
+  note('err','App error', msg+where, d.join('\n'));
 },true);
 
 window.addEventListener('unhandledrejection',function(e){
   var r=e.reason;
   var key='rej:'+String(r&&r.message||r);
   if(seenErr[key]) return; seenErr[key]=1;
-  note('err','Unhandled promise rejection', String((r&&r.message)||r),
-       (r&&r.stack)?String(r.stack).slice(0,700):null);
+  var d=['message: '+String((r&&r.message)||r)];
+  if(r && r.name) d.push('type:    '+r.name);
+  d.push('app:     '+CFG.slug);
+  if(r && r.stack) d.push('\n'+String(r.stack).slice(0,900));
+  note('err','Unhandled promise rejection', String((r&&r.message)||r), d.join('\n'));
 });
 
 /* --- navigation guards ------------------------------------------------ */
