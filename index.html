@@ -1268,6 +1268,26 @@ document.addEventListener('click',function(e){
     if(t && t.scrollIntoView) t.scrollIntoView({behavior:'smooth',block:'start'});
   }
 },true);
+
+
+/* --- let a slider own the whole control ------------------------------- */
+/* By default only the thumb responds to touch. Touching the track either
+   side of it counts as page background, so the page scrolls instead and you
+   have to aim at a thumb a few millimetres wide. touch-action:none hands the
+   whole input to the slider, so a drag can start anywhere along it.
+   Appended late so it beats the app's own rules at equal specificity, and
+   without !important, so an app that sets touch-action itself still wins. */
+(function(){
+  function addFix(){
+    if(!document.head && !document.body) return;
+    var st=document.createElement('style');
+    st.setAttribute('data-sideload','touch');
+    st.textContent='input[type=range]{touch-action:none}';
+    (document.head||document.body).appendChild(st);
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',addFix);
+  else addFix();
+})();
 `;
 
 /* ---------- 9. boot ----------------------------------------- */
