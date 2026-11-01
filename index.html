@@ -6,8 +6,8 @@
 <title>sideload</title>
 <!-- These must be STATIC: iOS reads them when you tap Add to Home Screen, and the
      document is the same for every #hash, so static markup covers every app.
-     Deliberately NO <link rel="manifest">: a manifest's start_url would drop the
-     fragment and launch the bare compiler instead of your app. -->
+     No <link rel="manifest">: a shared static manifest with a fixed start_url
+     would launch the same URL for every app, losing each app's fragment. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="sideload">
@@ -603,7 +603,7 @@ function renderApps(){
     }
     else if(b.dataset.del!=null){
       var idx=+b.dataset.del, a=apps[idx];
-      if(!confirm('Remove "'+a.title+'" from this list?\n\nIts saved data is kept — recompiling with the storage key "'+a.slug+'" will find it again.')) return;
+      if(!confirm('Remove "'+a.title+'" from this list?\n\nIts saved data is kept. Recompiling with the storage key "'+a.slug+'" will find it again.')) return;
       apps.splice(idx,1); selfSet('apps',apps); renderApps();
     }
   };
@@ -858,7 +858,7 @@ function importBackup(file){
     var msg='Import '+keys.length+' key'+(keys.length>1?'s':'')+' from '+
             (obj.exportedAt||'an unknown date')+'?';
     if(clash.length) msg+='\n\n'+clash.length+' existing key'+(clash.length>1?'s':'')+
-                          ' will be overwritten. This cannot be undone — export first if unsure.';
+                          ' will be overwritten. This cannot be undone, so export first if unsure.';
     if(!confirm(msg)) return;
     var ok=0;
     keys.forEach(function(k){ try{ localStorage.setItem(k,obj.data[k]); ok++; }catch(e){} });

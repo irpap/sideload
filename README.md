@@ -78,7 +78,7 @@ With the engine cached, an app that fetches no external resources can open offli
 
 The title, `apple-mobile-web-app-title` and a generated icon are set at runtime to give each app its own label and tile.
 
-There is no `<link rel="manifest">`: a manifest's `start_url` would strip the fragment and launch the empty compiler. The service worker only controls the response to a request and leaves the fragment intact.
+There is no `<link rel="manifest">`. A shared static manifest with a fixed `start_url` would launch the same URL for every app, losing each app's fragment. The service worker only controls the response to a request and leaves the fragment intact.
 
 ## Security model
 
