@@ -277,41 +277,19 @@ you intend to share.
 
 **Apps on one instance are not isolated from each other.** All your apps run on the same
 origin, so they share one `localStorage`. The engine gives each app its own key prefix, which
-stops two apps from overwriting each other by accident. It does not stop an app from reading
-another app's data on purpose.
+keeps two apps from overwriting each other by accident, but it is not a security boundary.
+App code can reach the real `localStorage` in one line, either with
+`delete window.localStorage`, which exposes the native accessor still sitting on
+`Window.prototype`, or through a same-origin iframe.
 
-Getting past the prefix takes one line. The engine installs its proxy as a configurable
-property on `window`, and the native `localStorage` accessor is still on `Window.prototype`,
-so `delete window.localStorage` restores the real one. Creating a same-origin iframe and
-reading `frame.contentWindow.localStorage` works too.
+So an app you publish can read what your other apps saved, and can read your signing key,
+which is stored as a plain string. That makes the rule a simple one: publish only HTML you
+have read. If a key is ever exposed, you replace it by generating a new one and committing
+the new public key, which also means republishing your apps.
 
-An app that does this can read everything your other apps have saved. It can also read your
-signing private key, which the engine keeps as a plain string in `localStorage`.
-
-So the rule is to publish only HTML you have read. Breaking it costs you the data your other
-apps saved. It can also cost you the key, which is worse, because anyone holding your private
-key can publish apps to your origin until you change the public key committed in
-`index.html`, including apps they send to people you have shared links with. Changing the key
-means generating a new one, editing `index.html`, pushing and republishing every app, and
-every home-screen icon you already have stops working.
-
-### What the shared origin means in practice
-
-GitHub Pages serves every repository on an account from one host. `you.github.io/sideload/`,
-`you.github.io/notes/` and `you.github.io/anything/` differ only in the path, and browsers
-scope storage by origin, which is scheme, host and port. The path is not part of it, so all
-three read and write the same `localStorage`.
-
-For most accounts this changes nothing, because static demos, docs sites and blogs do not
-keep secrets in `localStorage`. It matters if you host something on the same account that
-does, for example a tool that holds an API token client-side. A sideloaded app could read
-that token, and a bug on that other page could read your signing key.
-
-If that applies to you, a free GitHub organisation is the cheapest fix, because
-`yourorg.github.io` is a different origin from `you.github.io` and creating one takes a
-minute. The thorough fix is to put the compiler and the runner on different hosts, which
-keeps the key on an origin that never runs app code. That costs one extra deploy at setup
-and none per app.
+Anything else you serve from `you.github.io` shares that origin too, because GitHub Pages
+gives one host per account and separates repositories by path alone. That matters only if one
+of those pages keeps something valuable in `localStorage`, such as an API token.
 
 ## Reference
 
