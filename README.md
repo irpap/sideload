@@ -275,29 +275,43 @@ a link can decode the fragment, read the HTML, modify it and run it elsewhere. W
 cannot do is run a modified version on your origin. Do not put API keys or secrets in an app
 you intend to share.
 
-**Apps on one instance are not isolated from each other.** The `localStorage` proxy prefixes
-keys to avoid accidental collisions between your own apps, not to stop deliberate access.
-Every app runs on the same origin, so app code can get past the proxy in a single line. The
-proxy is installed as a configurable own property on `window` while the native accessor sits
-on `Window.prototype`, so `delete window.localStorage` brings the original back, and
-appending a same-origin iframe and reading `frame.contentWindow.localStorage` has the same
-effect.
+**Apps on one instance are not isolated from each other.** All your apps run on the same
+origin, so they share one `localStorage`. The engine gives each app its own key prefix, which
+stops two apps from overwriting each other by accident. It does not stop an app from reading
+another app's data on purpose.
 
-That reaches every app's stored data, and the signing private key as well, which is held as
-a plain string in `localStorage`. So the rule to work by is that you publish only HTML you
-have read. If you break it, the immediate cost is that one app can read what your other apps
-saved, and the larger cost is that a key which leaves your device lets whoever has it publish
-to your origin indefinitely, including to people you have sent links to. Recovering from that
-means generating a new key, editing `index.html`, pushing, republishing every app, and losing
-every home-screen icon you have.
+Getting past the prefix takes one line. The engine installs its proxy as a configurable
+property on `window`, and the native `localStorage` accessor is still on `Window.prototype`,
+so `delete window.localStorage` restores the real one. Creating a same-origin iframe and
+reading `frame.contentWindow.localStorage` works too.
 
-Two practical consequences:
+An app that does this can read everything your other apps have saved. It can also read your
+signing private key, which the engine keeps as a plain string in `localStorage`.
 
-- Host the instance on a GitHub account that serves nothing sensitive. One `github.io` origin
-  covers every repository on the account, so any page hosted there can read this storage.
-- Putting the compiler and the runner on different origins would keep the key on an origin
-  that never runs app code. That is the right fix if an instance stops being single-user. It
-  costs one extra deploy at setup and no per-app deploy.
+So the rule is to publish only HTML you have read. Breaking it costs you the data your other
+apps saved. It can also cost you the key, which is worse, because anyone holding your private
+key can publish apps to your origin until you change the public key committed in
+`index.html`, including apps they send to people you have shared links with. Changing the key
+means generating a new one, editing `index.html`, pushing and republishing every app, and
+every home-screen icon you already have stops working.
+
+### What the shared origin means in practice
+
+GitHub Pages serves every repository on an account from one host. `you.github.io/sideload/`,
+`you.github.io/notes/` and `you.github.io/anything/` differ only in the path, and browsers
+scope storage by origin, which is scheme, host and port. The path is not part of it, so all
+three read and write the same `localStorage`.
+
+For most accounts this changes nothing, because static demos, docs sites and blogs do not
+keep secrets in `localStorage`. It matters if you host something on the same account that
+does, for example a tool that holds an API token client-side. A sideloaded app could read
+that token, and a bug on that other page could read your signing key.
+
+If that applies to you, a free GitHub organisation is the cheapest fix, because
+`yourorg.github.io` is a different origin from `you.github.io` and creating one takes a
+minute. The thorough fix is to put the compiler and the runner on different hosts, which
+keeps the key on an origin that never runs app code. That costs one extra deploy at setup
+and none per app.
 
 ## Reference
 
