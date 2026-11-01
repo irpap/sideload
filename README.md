@@ -182,13 +182,11 @@ Anyone who wants to publish their own apps forks the repository and generates th
 
 ### URL length budget: 64,000 characters
 
-Neither the URI specification nor the WHATWG URL Standard defines a maximum URL length. The often-quoted 8,000 octet figure is RFC 7230's recommended minimum support for an HTTP request line. It does not apply to the fragment, which is never sent.
+The compiler allows URLs up to 64,000 characters. This is a conservative budget; testing has only confirmed that a roughly 21,000-character link survives Add to Home Screen on an iPhone. Apple does not document how much of a URL a home-screen bookmark preserves.
 
-Chromium documents a 2 MB cap. Apple publishes no limit for Safari. The relevant limit is how much of a URL iOS preserves in a home-screen bookmark, which is undocumented.
+Neither the URI specification nor the WHATWG URL Standard sets a maximum length. Chromium documents a 2 MB cap; Apple publishes no Safari limit. RFC 7230's often-quoted 8,000-octet figure is a recommended minimum for HTTP request lines and does not apply to fragments, which browsers never send.
 
-The compiler's 64,000-character budget is a conservative choice, not a measured limit. The only measurement behind it is a roughly 21,000-character link that survived Add to Home Screen on an iPhone.
-
-Truncation changes the signed bytes, so a truncated link fails verification. The engine reports a cut-short link instead of rendering a broken page.
+If a link gets truncated, signature verification fails and the app cannot run. The engine displays a cut-short link error.
 
 ### Compression
 
