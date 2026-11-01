@@ -339,11 +339,12 @@ node test/run.mjs                              # bundled samples only
 node test/run.mjs ~/Downloads/some-app.html    # plus specified files
 ```
 
-188 checks, plus three per file passed in: lossless round-trip through the codec, signature
-verification and every tampering case, `localStorage` namespace separation, `window.claude`
-stand-in conformance, and URL budget. The service worker is driven in a sandbox with a fake
-cache, a fake network and a hand-fired timer, so the network-first path, the offline
-fallback and the stall race are exercised rather than assumed.
+Covers lossless round-trip through the codec, signature verification and every tampering
+case, `localStorage` namespace separation, `window.claude` stand-in conformance, and the URL
+budget. Each file passed in is additionally checked for byte fidelity and size. The service
+worker is driven in a sandbox with a fake cache, a fake network and a hand-fired timer, so
+the network-first path, the offline fallback and the stall race are exercised rather than
+assumed.
 
 Anything involving the home screen, or a real browser cache, has to be tested on a phone.
 
