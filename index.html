@@ -88,10 +88,6 @@ textarea.drop{border-color:var(--accent);background:color-mix(in srgb,var(--acce
 .app .meta b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .app .meta span{font-size:11.5px;color:var(--faint)}
 .empty{color:var(--faint);font-size:13px;padding:2px 0}
-details{margin-top:4px}
-summary{cursor:pointer;font-size:13px;color:var(--dim);padding:4px 0}
-details p,details li{font-size:13px;color:var(--dim);line-height:1.6}
-details ul{padding-left:19px;margin:8px 0}
 .toast{
   position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);
   background:var(--fg);color:var(--bg);padding:9px 16px;border-radius:99px;font-size:13px;
@@ -536,39 +532,6 @@ function compilerHTML(){
       '</div>'+
       '<div class="hint" id="dataHint"></div>'+
     '</div>'+
-
-    '<details>'+
-      '<summary>How this works, and what it can\u2019t do</summary>'+
-      '<p>Your app is gzipped, base64url-encoded, signed with your key and stored in the URL '+
-      'fragment, the part after <code>#</code>. Browsers do not send fragments to the server, so '+
-      'the server hosting this page does not receive the app payload. This page checks the '+
-      'signature, then replaces itself with the app.</p>'+
-      '<ul>'+
-        '<li><b>Size.</b> Larger apps produce longer links. This page sets no length limit, and '+
-          'Apple does not document how much of a URL iOS preserves in a home-screen bookmark. The '+
-          'longest link tested on an iPhone is about 21,000 characters. If a link gets cut short, '+
-          'signature verification fails and the app cannot open. Inline base64 images can make '+
-          'links very long.</li>'+
-        '<li><b>Browser support.</b> Requires <code>CompressionStream</code>: Safari 16.4, '+
-          'Firefox 113, Chrome 80 or later.</li>'+
-        '<li><b>Offline access.</b> A service worker caches the engine that opens your app. Once '+
-          'cached, apps with no external dependencies can open offline. The first visit requires a '+
-          'connection, and iOS can later evict the cached engine.</li>'+
-        '<li><b>Saved data.</b> Data stays on each device. Each app\u2019s localStorage keys are '+
-          'prefixed with its data name to prevent accidental collisions. Keep the same data name '+
-          'when rebuilding an app to reuse its saved data.</li>'+
-        '<li><b>Backups.</b> WebKit deletes script-writable storage after seven days without user '+
-          'interaction in browser tabs. Home-screen apps are exempt from that rule, but their '+
-          'storage is still not guaranteed. Use <b>Export all app data</b> above to back up your '+
-          'app data. The backup excludes your private key; keep that in a password manager.</li>'+
-        '<li><b>Signing and trust.</b> Only apps signed with your key can run here. Other payloads '+
-          'are rejected before any app code runs. Apps on this instance share an origin and can '+
-          'read each other\u2019s data, including the signing key stored on a publishing device. '+
-          'Publish only HTML you have read.</li>'+
-        '<li><b>Sharing.</b> Links can exceed QR code capacity and some chat clients\u2019 limits. '+
-          'AirDrop, Messages, email and notes handle long links.</li>'+
-      '</ul>'+
-    '</details>'+
   '</div>';
 }
 
