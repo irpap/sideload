@@ -1,6 +1,6 @@
 # sideload
 
-`sideload` runs single-file HTML apps from a URL. It stores the app's source in the URL fragment. To publish an app, you paste its HTML into the compiler and save the signed link it generates.
+`sideload` runs single-file HTML apps from a URL. The app's source is stored in the URL fragment. To publish an app, paste its HTML into the compiler and save the signed link it generates.
 
 The engine is deployed once to GitHub Pages. Individual apps need no deployment.
 
@@ -44,11 +44,11 @@ sideload writes the decoded HTML into the top-level document with `document.writ
 
 The engine injects a prelude as the first script in the written document, before any app code runs. The prelude replaces `window.localStorage` with a proxy that prefixes every key with the app's data name. Two apps can both use a key called `data` without accidentally overwriting each other.
 
-These prefixes provide namespacing only. The security implications of sharing an origin are covered below.
+The prefixes do not isolate apps from each other. See [Shared-origin access](#shared-origin-access).
 
 ### Origin tradeoffs
 
-Browser storage isolation requires one origin per app. Of these three properties, an instance can have two:
+Browser storage isolation requires one origin per app. The hosting options have different costs and deployment requirements:
 
 | Approach | No deploy per app | Isolated origin per app | Free |
 |---|---|---|---|
@@ -62,23 +62,23 @@ Wildcard DNS provides arbitrary subdomains without per-app deployments, but has 
 
 ### Offline loading
 
-The payload arrives in the link and needs no network access. The engine must be fetched, so `sw.js` caches it in a service worker.
+The payload arrives in the link. The engine must be fetched, so `sw.js` caches it in a service worker.
 
-Every app produces the same `GET` request for the same page because the fragment is excluded from the request. One cached response covers all apps, including apps published later. The worker does not need to track individual apps.
+Every app produces the same `GET` request for the same page because the request excludes the fragment. One cached response covers all apps, including apps published later. The worker does not need to track individual apps.
 
 The worker tries the network first and falls back to the cache. Cache-first loading would prevent pushed fixes from reaching a device. It could also leave a cached engine with an old `PUBLIC_KEY`, causing it to reject links signed with a new key.
 
 A 2.5 second timer runs alongside the request so a stalled connection does not leave a blank page. A response that arrives after the timer still updates the cache for the next load.
 
-With the engine cached, an app that fetches no external resources can open offline. The first load on a new device requires the network. iOS storage eviction can also remove cached resources; see [Storage eviction](#storage-eviction).
+With the engine cached, an app that fetches no external resources can open offline. The first load on a new device requires the network. iOS can also evict cached resources; see [Storage eviction](#storage-eviction).
 
 ### iOS home-screen support
 
-`apple-mobile-web-app-capable`, the status bar style and a fallback `apple-touch-icon` are static in `index.html`. iOS reads them when saving the bookmark, and one set of tags covers every app because each uses the same document with a different fragment.
+`apple-mobile-web-app-capable`, the status bar style and a fallback `apple-touch-icon` are static in `index.html`. iOS reads them when saving the bookmark. One set of tags covers every app because each uses the same document with a different fragment.
 
 The title, `apple-mobile-web-app-title` and a generated icon are set at runtime to give each app its own label and tile.
 
-There is no `<link rel="manifest">`: a manifest's `start_url` would strip the fragment and launch the empty compiler. The service worker keeps the fragment intact because it only controls the response to a request.
+There is no `<link rel="manifest">`: a manifest's `start_url` would strip the fragment and launch the empty compiler. The service worker only controls the response to a request and leaves the fragment intact.
 
 ## Security model
 
@@ -88,9 +88,9 @@ The intended use is running code you wrote or have read, on an origin you contro
 
 `document.write` runs app code on the engine's origin with full access to its `localStorage`. Accepting arbitrary fragments would let anyone construct a link containing JavaScript that could read data stored by the instance's apps.
 
-Each payload is signed with an ECDSA P-256 private key. The matching public key is hardcoded in `index.html`. The engine verifies the signature before decompressing or rendering the payload. Links signed with another key or altered after signing are rejected before any app code runs, with no prompt to override the check.
+Each payload is signed with an ECDSA P-256 private key. The matching public key is hardcoded in `index.html`. The engine verifies the signature before decompressing or rendering the payload. Links signed with another key or altered after signing are rejected before any app code runs. There is no prompt to override the check.
 
-Each instance trusts its own public key. A fork with its own key cannot publish executable links to the original instance, and the original cannot publish to the fork. This signature check allows the instance to accept links while keeping all apps on one origin.
+Each instance trusts its own public key. A fork with its own key cannot publish executable links to the original instance, and the original cannot publish to the fork.
 
 ### Payload visibility
 
@@ -102,12 +102,12 @@ Do not put API keys or secrets in an app you intend to share.
 
 All apps on an instance share one origin and one underlying `localStorage`. The key prefixes prevent accidental collisions but provide no security boundary.
 
-App code can reach the real `localStorage` in one line:
+App code can bypass the proxy:
 
 - `delete window.localStorage` exposes the native accessor on `Window.prototype`.
 - A same-origin iframe also provides access to the real storage.
 
-An app you publish can therefore read data saved by your other apps. It can also read your signing key, which is stored as a plain string. Publish only HTML you have read.
+An app you publish can read data saved by your other apps. It can also read your signing key, which is stored as a plain string. Publish only HTML you have read.
 
 If a key is exposed, generate a new keypair and commit the new public key. Existing apps must then be republished with the new key.
 
@@ -158,7 +158,7 @@ Devices that only run apps need no key.
 
 Paste HTML into the compiler. The app name comes from the `<title>` tag. The compiler derives a data name from it, which becomes the app's `localStorage` prefix.
 
-Check the size meter, tap **Open app**, then **Share → Add to Home Screen**.
+Check the reported size, tap **Open app**, then **Share → Add to Home Screen**.
 
 ### Update an app
 
@@ -182,15 +182,17 @@ Anyone who wants to publish their own apps forks the repository and generates th
 
 ### URL length
 
-The app travels in the link, so a larger app means a longer URL. The compiler reports the HTML size, the gzipped size and the final URL length for whatever you paste.
+The compiler imposes no URL length limit. It reports the HTML size, gzipped size and final URL length for whatever you paste.
 
-Nothing caps that length. Neither the URI specification nor the WHATWG URL Standard sets a maximum. Chromium documents a 2 MB cap; Apple publishes no Safari limit. RFC 7230's often-quoted 8,000-octet figure is a recommended minimum for HTTP request lines and does not apply to fragments, which browsers never send. The limit that would matter here is how much of a URL iOS keeps in a home-screen bookmark, and Apple does not document it.
+The longest link confirmed working on an iPhone is roughly 21,000 characters. The test suite signs and verifies a 423,683-character payload, but that does not establish what iOS can save in a home-screen bookmark. Lengths between those two numbers have not been tested on an iPhone.
 
-The longest link confirmed working on an iPhone is roughly 21,000 characters. The test suite signs and verifies a 423,683-character payload, so the engine itself is not the constraint. Anything between those two numbers is untested.
+Neither the URI specification nor the WHATWG URL Standard sets a maximum URL length. Chromium documents a 2 MB cap; Apple publishes no Safari limit or home-screen bookmark limit. RFC 7230's often-quoted 8,000-octet figure is a recommended minimum for HTTP request lines and does not apply to fragments, which browsers never send.
 
-If a link gets truncated, signature verification fails and the engine displays an error instead of running the app.
+If a link gets truncated, signature verification fails and the app cannot run. The engine displays an error.
 
-Payloads are gzipped and then base64url-encoded. Base64url adds back about a third, so the useful measure is HTML bytes per URL character. Measurements from the HTML in this repository:
+### Compression
+
+Payloads are gzipped and then base64url-encoded. Base64url adds back about a third, so HTML bytes per URL character determines how much source fits in a link.
 
 | File | Raw | Gzipped | Ratio |
 |---|---|---|---|
@@ -198,7 +200,7 @@ Payloads are gzipped and then base64url-encoded. Base64url adds back about a thi
 | `samples/storage-probe.html` | 5,235 B | 2,203 B | 2.38x |
 | a 53 KB app | 54,243 B | 15,580 B | 3.48x |
 
-The 53 KB file produces a 21,411-character URL. Three files are too small a sample to establish a distribution; use the compiler's measurement for each app. Inline base64 images are what usually make a link very long.
+The 53 KB file produces a 21,411-character URL. These three measurements do not establish a typical compression ratio; check the compiler's result for each app. Inline base64 images commonly produce very long links.
 
 ### Browser requirements
 
@@ -222,22 +224,22 @@ Use **Export all app data** for anything that matters. The export includes app d
 
 Single-file artifacts from Claude can be pasted and published as they are.
 
-Artifacts that persist state call `window.claude`, which normally exists only on claude.ai. The engine injects a local stand-in backed by the app's namespaced `localStorage`, implemented against published runtime contract 0.2.96.
+Artifacts that persist state call `window.claude`, which normally exists only on claude.ai. The engine injects a local implementation backed by the app's namespaced `localStorage`, based on published runtime contract 0.2.96.
 
-The stand-in fully implements:
+It fully implements:
 
 - `db`: documents, collections, `where`, `orderBy` and `limit` queries, `onSnapshot` subscriptions, generated ids and document leases.
 - `user`: reports the viewer as the app's owner.
 
-`room`, `sample`, `artifact`, `assets`, `downloads`, `files`, `mcp` and `comments` are intentionally unimplemented. The contract specifies that `claude.use(name)` resolves to `null` for a namespace unavailable in a given view. Artifacts branch on that result and can degrade as their authors intended. Returning a partial namespace would expose missing methods with no defined handling, causing exceptions.
+`room`, `sample`, `artifact`, `assets`, `downloads`, `files`, `mcp` and `comments` are intentionally unimplemented. The contract specifies that `claude.use(name)` resolves to `null` for an unavailable namespace. Artifacts branch on that result to handle missing functionality. A partial implementation could expose missing methods with no defined handling, causing exceptions.
 
-The stand-in lives in `index.html` and is injected at runtime, so it adds nothing to the app's URL length.
+The implementation lives in `index.html` and is injected at runtime, so it adds nothing to the app's URL length.
 
 Data stored in a Claude account stays there. A sideloaded artifact starts empty.
 
 ### Comparison with publishing on claude.ai
 
-Publishing on claude.ai takes one click and is the better option for showing someone a demo. The following differences are structural:
+Publishing on claude.ai takes one click and is the simpler option for sharing a demo.
 
 | | Published on claude.ai | sideload |
 |---|---|---|
@@ -259,7 +261,7 @@ test/mklinks.mjs        dev helper: short redirect stubs, so a 20,000-character 
                         tappable on a phone
 ```
 
-`index.html` is plain ES5 with no build step. It begins with a map of its nine sections. The file is the deployed artifact and must run on the phone's Safari version. Keeping it self-contained also makes the full trust boundary readable in one sitting.
+`index.html` is plain ES5 with no build step. It begins with a map of its nine sections. The file is deployed directly and must run on the phone's Safari version. Keeping it self-contained also keeps the full trust boundary in one file, small enough to read in one sitting.
 
 ### Tests
 
@@ -273,10 +275,10 @@ The suite covers:
 - Round-trip fidelity through the codec.
 - Signature verification and each way of tampering with a payload.
 - `localStorage` namespace separation.
-- Conformance of the `window.claude` stand-in.
+- Conformance of the `window.claude` implementation.
 - Round-trip and tamper rejection at 423,683 payload characters.
 
-Files named on the command line are also checked for byte fidelity and size.
+Files named on the command line are also checked for byte fidelity and title preservation.
 
 The service worker runs in a sandbox with a fake cache, a fake network and a manually fired timer. Tests exercise the network-first path, offline fallback and stalled-connection timeout.
 
@@ -286,7 +288,6 @@ Home-screen behavior and real browser caches require testing on a phone.
 
 - **"This site has no signing key"** means `PUBLIC_KEY` is still empty in `index.html`. See setup step 3.
 - **"This key does not match your site"** means the private key in the browser does not correspond to the committed `PUBLIC_KEY`. This is common when forking without completing step 3.
-- **"Refused: this link is not signed by your key"** means the link was signed by a different key or altered after signing.
 - **"This link did not verify"** means the signature does not match the payload. The link was built on another instance, altered after signing, or truncated in transit.
 - **"Insecure context"** means Web Crypto is unavailable. Use `https://` or `localhost`; a `file://` path will not work.
 - **A blank screen with no error** usually means a CDN script in the app failed to load. Check the compiler's external-host warning.
