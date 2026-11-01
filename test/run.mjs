@@ -626,6 +626,148 @@ head('5. Real artifacts -- byte fidelity, budget, analysis');
   }
 }
 
+/* ================ 6. service worker ================ */
+/* Driven in a vm with a fake cache, a fake network and a timer we fire by
+   hand, so the network-first logic is actually exercised rather than just
+   read. Anything involving a real browser cache has to be tested on a phone. */
+head('6. Service worker');
+{
+  const swSrc = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
+
+  ok('index.html registers the worker', /navigator\.serviceWorker\.register\('sw\.js'\)/.test(src));
+  ok('registration is attempted before the app takes over',
+     src.indexOf('registerWorker();') < src.indexOf("var h=location.hash"));
+  ok('the cache name is versioned', /var CACHE\s*=\s*'sideload-engine-v\d+'/.test(swSrc));
+
+  /* ---- a fake service worker global ---- */
+  function mkWorker({ network } = {}) {
+    const store = new Map();                 /* url -> {body, ok} */
+    const timers = [];
+    const handlers = {};
+    const mkRes = (body, okFlag = true) => ({
+      body, ok: okFlag, clone() { return mkRes(body, okFlag); },
+    });
+    const cache = {
+      addAll: (list) => Promise.all(list.map((u) =>
+        Promise.resolve(store.set(new URL(u, 'https://x.test/sideload/').href, mkRes('ENGINE'))))),
+      put: (req, res) => { store.set(new URL(req.url).href, res); return Promise.resolve(); },
+      match: (req) => {
+        const u = new URL(typeof req === 'string' ? req : req.url, 'https://x.test/sideload/').href;
+        return Promise.resolve(store.get(u) || undefined);
+      },
+    };
+    const sb = {
+      self: {
+        location: { origin: 'https://x.test', href: 'https://x.test/sideload/sw.js' },
+        addEventListener(t, f) { handlers[t] = f; },
+        skipWaiting: () => Promise.resolve(),
+        clients: { claim: () => Promise.resolve() },
+      },
+      caches: {
+        open: () => Promise.resolve(cache),
+        keys: () => Promise.resolve(['sideload-engine-v1', 'sideload-engine-v0']),
+        delete: (k) => { sb._deleted.push(k); return Promise.resolve(true); },
+        match: cache.match,
+      },
+      _deleted: [],
+      fetch: (req) => network(req),
+      Response: { error: () => mkRes('NETWORK ERROR', false) },
+      URL, Promise, console, Object, Array, String, JSON, Math,
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      clearTimeout: (id) => { if (timers[id - 1]) timers[id - 1].cancelled = true; },
+    };
+    sb.globalThis = sb;
+    vm.createContext(sb);
+    vm.runInContext(swSrc, sb);
+    return {
+      sb, store, handlers, timers, mkRes,
+      fireTimers() { timers.forEach((t) => { if (!t.cancelled) t.fn(); }); },
+      /* returns whatever the worker chose to answer with, or null if it
+         declined to intercept at all */
+      request(url, method = 'GET') {
+        let answered = null;
+        handlers.fetch({
+          request: { url, method },
+          respondWith(p) { answered = p; },
+        });
+        return answered;
+      },
+    };
+  }
+
+  /* ---- install precaches the engine ---- */
+  {
+    const w = mkWorker({ network: () => Promise.reject(new Error('offline')) });
+    let waited;
+    await w.handlers.install({ waitUntil: (p) => { waited = p; } });
+    await waited;
+    ok('install precaches the page itself', w.store.has('https://x.test/sideload/'));
+    ok('install precaches index.html', w.store.has('https://x.test/sideload/index.html'));
+    ok('install precaches the icon', w.store.has('https://x.test/sideload/icon.png'));
+  }
+
+  /* ---- activate drops older caches ---- */
+  {
+    const w = mkWorker({ network: () => Promise.reject(new Error('offline')) });
+    let waited;
+    await w.handlers.activate({ waitUntil: (p) => { waited = p; } });
+    await waited;
+    eq('activate deletes the previous cache version', w.sb._deleted.join(','), 'sideload-engine-v0');
+  }
+
+  /* ---- online: the network wins and refreshes the cache ---- */
+  {
+    let asked = 0;
+    const w = mkWorker({ network: (req) => { asked++; return Promise.resolve(w.mkRes('FRESH')); } });
+    let waited; await w.handlers.install({ waitUntil: (p) => { waited = p; } }); await waited;
+    const res = await w.request('https://x.test/sideload/');
+    eq('online, the network answers', res.body, 'FRESH');
+    eq('the network was actually asked', asked, 1);
+    const stored = await w.sb.caches.match('https://x.test/sideload/');
+    eq('a fresh response replaces the cached engine', stored.body, 'FRESH');
+  }
+
+  /* ---- offline: the cache answers ---- */
+  {
+    const w = mkWorker({ network: () => Promise.reject(new Error('offline')) });
+    let waited; await w.handlers.install({ waitUntil: (p) => { waited = p; } }); await waited;
+    const res = await w.request('https://x.test/sideload/');
+    eq('offline, the cached engine answers', res.body, 'ENGINE');
+  }
+
+  /* ---- offline, a URL never cached under its own key ---- */
+  {
+    const w = mkWorker({ network: () => Promise.reject(new Error('offline')) });
+    let waited; await w.handlers.install({ waitUntil: (p) => { waited = p; } }); await waited;
+    const res = await w.request('https://x.test/sideload/?utm_source=x');
+    eq('an unseen same-origin URL falls back to the engine', res.body, 'ENGINE');
+  }
+
+  /* ---- a stalled network loses to the cache, but still refreshes it ---- */
+  {
+    let release;
+    const w = mkWorker({ network: () => new Promise((r) => { release = r; }) });
+    let waited; await w.handlers.install({ waitUntil: (p) => { waited = p; } }); await waited;
+    const pending = w.request('https://x.test/sideload/');
+    eq('a stall timer is armed', w.timers.length, 1);
+    eq('the timer waits a couple of seconds', w.timers[0].ms, 2500);
+    w.fireTimers();
+    eq('a stalled network falls back to the cache', (await pending).body, 'ENGINE');
+    release(w.mkRes('LATE'));
+    await new Promise((r) => setTimeout(r, 0));
+    const stored = await w.sb.caches.match('https://x.test/sideload/');
+    eq('the late response still updates the cache for next time', stored.body, 'LATE');
+  }
+
+  /* ---- what the worker deliberately leaves alone ---- */
+  {
+    const w = mkWorker({ network: () => Promise.resolve(w.mkRes('FRESH')) });
+    eq('a cross-origin request is not intercepted',
+       w.request('https://fonts.googleapis.com/css2?family=Inter'), null);
+    eq('a POST is not intercepted', w.request('https://x.test/sideload/', 'POST'), null);
+  }
+}
+
 console.log('\n' + (fail ? 'FAILED' : 'All passed') +
             ' -- ' + pass + ' passed, ' + fail + ' failed\n');
 process.exit(fail ? 1 : 0);

@@ -189,12 +189,23 @@ the ceiling sits somewhere near 140–170 KB of HTML, but five files is not a la
 in the compiler measures your actual file, and that is the number to trust. A single base64
 image is usually over the limit by itself.
 
-**It is not offline, yet.** The app needs no network, because it is in the link. The engine
-that unpacks it does: a few KB of static HTML fetched from your Pages site, with no service
-worker caching it. So an app with no external resources works on a plane for exactly as long
-as your browser happens to have that page cached, which is not something to rely on. A
-service worker would fix this properly and is maybe fifteen lines, since the engine is one
-file that rarely changes. It is not built.
+**Offline usually works.** The app needs no network because it is in the link. The engine
+that unpacks it is cached by a service worker, so an app that fetches nothing external opens
+without a connection. There is only one thing for that worker to cache, which is what makes
+this simple: since the fragment is not part of the request, every app you will ever publish
+arrives as the same `GET` for the same page, so one cached response covers all of them,
+including ones you publish later.
+
+It is network-first rather than cache-first, deliberately. Serving the cached engine
+unconditionally would mean a pushed fix never reached your phone, and a cached engine still
+holding your old `PUBLIC_KEY` would refuse links signed with your new one. So it asks the
+network, falls back to the cache, and races a 2.5-second timer so a stalled connection does
+not leave you looking at nothing.
+
+"Usually" is doing real work in that first sentence. iOS clears storage for sites it decides
+are idle, home-screen apps fare better than tabs but have no guarantee, and the first load on
+a new device has to come from the web. It is worth relying on for a flight; it is not worth
+relying on for something you would be stuck without.
 
 **Browser requirements.** `CompressionStream` means Safari 16.4, Firefox 113, Chrome 80 or
 later. Signature checking uses Web Crypto, which browsers only expose in a secure context,
@@ -297,6 +308,7 @@ Two consequences worth acting on:
 ```
 index.html              the whole engine: compiler, runner, signing, storage, launcher
 icon.png                fallback apple-touch-icon
+sw.js                   caches the engine so apps open without a network
 tools/keygen.mjs        generate a keypair from the command line
 samples/
   storage-probe.html    writes generic storage keys; two copies show apps stay separate
@@ -316,11 +328,13 @@ node test/run.mjs                              # samples only
 node test/run.mjs ~/Downloads/some-app.html    # plus your own files
 ```
 
-170 checks, plus three more for each file you pass: that apps survive the codec byte for
+188 checks, plus three more for each file you pass: that apps survive the codec byte for
 byte, that every way of faking or tampering with a signature is refused, that apps cannot
 see each other's storage, that the `window.claude` stand-in matches its contract, and that
-real files fit the budget. Anything involving the home screen has to be tested on a real
-phone.
+real files fit the budget. The service worker is driven in a sandbox with a fake cache, a
+fake network and a timer fired by hand, so the network-first path and the offline fallback
+are exercised rather than assumed. Anything involving the home screen, or a real browser
+cache, has to be tested on a phone.
 
 ### iOS specifics
 
@@ -349,6 +363,11 @@ truncation looks like. Something shortened it in transit. Rebuild from a smaller
 
 **A blank app with no error** — check the compiler's external-host warning. A CDN script
 that fails to load will usually stop the app dead.
+
+**An engine change has not reached the phone** — the service worker is network-first, so a
+reload while online should pick it up. If it does not, the cached copy is being served
+because the request stalled; try again on a better connection. Bumping `CACHE` in `sw.js`
+forces every device to discard the old cache on its next visit.
 
 ## Prior art
 

@@ -573,10 +573,10 @@ function compilerHTML(){
           'the limit on its own.</li>'+
         '<li><b>Needs <code>CompressionStream</code></b> \u2014 Safari 16.4, Firefox 113, Chrome 80 '+
           'or later.</li>'+
-        '<li><b>This page has to load before your app can.</b> The app itself is in the link and '+
-          'needs no network, but the few KB of engine that unpacks it still comes from the web, and '+
-          'there is no service worker caching it yet. So an app with no external resources works on '+
-          'a plane only for as long as your browser happens to have this page cached.</li>'+
+        '<li><b>Offline.</b> The app itself is in the link and needs no network. The engine that '+
+          'unpacks it is cached by a service worker, so an app that fetches nothing external usually '+
+          'opens on a plane. Usually, not always: iOS clears storage for sites it considers idle, '+
+          'and the first time you open this page it has to come from the web.</li>'+
         '<li><b>Storage is per device and per app.</b> Each app\u2019s localStorage keys are prefixed with '+
           'its data name, so two apps can both use <code>data</code> without clashing. Keep the data name '+
           'the same and you can rebuild the app without losing what you saved.</li>'+
@@ -1630,6 +1630,21 @@ document.addEventListener('click',function(e){
 `;
 
 /* ---------- 9. boot ----------------------------------------- */
+/* Cache this file so an app can open without a network. There is one thing
+   to cache and it covers every app: the fragment carrying the app is not part
+   of the request, so every app is the same GET for this page. See sw.js.
+   Registered before the app takes over the document -- registration is
+   origin-level and outlives the page content being replaced. */
+function registerWorker(){
+  if(!('serviceWorker' in navigator)) return;
+  try{
+    navigator.serviceWorker.register('sw.js').catch(function(){
+      /* No offline support, then. Everything else still works, so there is
+         nothing worth interrupting the user about. */
+    });
+  }catch(e){}
+}
+
 function boot(){
   if(typeof CompressionStream!=='function' || typeof DecompressionStream!=='function'){
     fatal('This browser is too old',
@@ -1642,6 +1657,8 @@ function boot(){
       'This page was not loaded that way, so nothing can be verified or run.');
     return;
   }
+  registerWorker();
+
   var h=location.hash.replace(/^#/,'');
   if(h){ runApp(h); return; }
   showCompiler();
