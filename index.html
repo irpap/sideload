@@ -117,8 +117,9 @@ details ul{padding-left:19px;margin:8px 0}
 /* ======================================================================
  * sideload - run a single-file HTML app straight out of a URL fragment.
  *
- * Everything happens in the browser. The part of the URL after the # is
- * never sent to a server, so an app's code and its data stay on the device.
+ * Everything happens in the browser. The part of the URL after the # is a
+ * fragment, and a fragment is not part of an HTTP request, so the server
+ * that hands you this page never learns which app you opened.
  *
  * Reading order:
  *
@@ -138,13 +139,17 @@ details ul{padding-left:19px;margin:8px 0}
  *                      no editor will highlight or lint it.
  *   9  boot            hash present -> run it; otherwise show the compiler
  *
- * Not minified, on purpose. The claim that your data never leaves the
- * device is only worth anything if you can read the code that makes it.
+ * Not minified, on purpose. This file decides which code is allowed to
+ * run on your origin, and that decision is only worth as much as your
+ * ability to read how it is made.
  * ====================================================================== */
 
 var NS_PREFIX = '__sideload__';          /* app data:  __sideload__<slug>:<key>   */
 var SELF_NS   = '__sideload$self:';      /* own state: '$' can't occur in a slug  */
-var BUDGET    = 64000;                   /* conservative URL ceiling for Safari   */
+var BUDGET    = 64000;                   /* chosen ceiling, not a documented one: */
+                                         /* no browser publishes a URL limit, and */
+                                         /* what iOS keeps in a home-screen       */
+                                         /* bookmark is undocumented too          */
 var VERSION   = '2';
 var MAX_RECENT= 24;
 
