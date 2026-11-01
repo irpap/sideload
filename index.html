@@ -220,10 +220,13 @@ function publicFromPrivate(b64priv){
     });
 }
 
-/* the signing key stored on this device */
+/* The signing key stored on this device. KEY_SLOT is named because the
+   backup in section 7 has to leave it out: a backup file gets mailed and
+   AirDropped around, and the private key must not travel with it. */
+var KEY_SLOT = SELF_NS + 'key';
 function storedKey(){ var v=selfGet('key',null); return typeof v==='string'?v:null; }
 function storeKey(b64){ selfSet('key', b64); }
-function forgetStoredKey(){ try{ localStorage.removeItem(SELF_NS+'key'); }catch(e){} }
+function forgetStoredKey(){ try{ localStorage.removeItem(KEY_SLOT); }catch(e){} }
 
 /* ---------- 4. sign and verify ------------------------------ */
 /* * Format:  <version>-<base64url signature>.<base64url gzip(json)>
@@ -437,11 +440,23 @@ function runApp(payload){
   }).catch(function(err){
     var m = (err && err.message) || String(err);
 
+    /* A link cut short fails verification too, because the bytes changed.
+       For a long link that is much the likelier cause, so say so first --
+       the alternative reading is alarming and usually wrong. */
+    var nearLimit = payload.length >= BUDGET-200;
     if(m === 'BADSIG'){
-      fatal('Refused: this link is not signed by your key',
-        'This site only runs apps signed with your own private key. This link was not \u2014 it may have been '+
-        'altered, built on someone else\u2019s site, or made by someone after your saved data. '+
-        'Nothing in it has been run.');
+      if(nearLimit){
+        fatal('This link looks cut short',
+          'It is '+fmtNum(payload.length)+' characters, right at the limit this site allows, and the '+
+          'signature does not match \u2014 which is what a truncated link looks like. Something along '+
+          'the way probably shortened it: a chat app, a notes field, or the bookmark itself. Build it '+
+          'again from a smaller app. Nothing in it has been run.');
+      }else{
+        fatal('Refused: this link is not signed by your key',
+          'This site only runs apps signed with your own private key. This link was not \u2014 it was '+
+          'built on someone else\u2019s site, altered after it was made, or aimed at your saved data. '+
+          'Nothing in it has been run.');
+      }
       return;
     }
     if(m === 'UNCONFIGURED'){
@@ -450,10 +465,9 @@ function runApp(payload){
         'create a key, and follow the setup steps in the README.');
       return;
     }
-    var extra='';
-    if(payload.length>=BUDGET-200)
-      extra=' The link is '+fmtNum(payload.length)+' characters, right at the limit \u2014 it may have been truncated when it was saved or shared.';
-    fatal('Could not open this link', m+extra);
+    fatal('Could not open this link',
+      m + (nearLimit ? ' The link is '+fmtNum(payload.length)+' characters, right at the limit \u2014 '+
+                       'it was probably cut short when it was saved or shared.' : ''));
   });
 }
 
@@ -542,17 +556,28 @@ function compilerHTML(){
     '<details>'+
       '<summary>How this works, and what it can’t do</summary>'+
       '<p>Your app is gzipped, base64url-encoded, signed with your key, and placed in the URL '+
-      'after the <code>#</code>. Browsers never send that part to a server, so your code and '+
-      'your data stay on your device. This page checks the signature, then runs the app.</p>'+
+      'fragment \u2014 the part after the <code>#</code>. A fragment is not part of the HTTP '+
+      'request, so the server that hands you this page never learns which app you opened. '+
+      'This page checks the signature, then runs the app in place of itself.</p>'+
       '<ul>'+
-        '<li><b>Budget.</b> About '+fmtNum(BUDGET)+' URL characters, roughly 150&ndash;200&nbsp;KB of HTML after compression. '+
-          'HTML, CSS and JS compress about 4&times;. A single base64 image is usually over the limit on its own.</li>'+
-        '<li><b>Needs <code>CompressionStream</code></b> \u2014 any recent Chrome, Edge, Firefox or Safari.</li>'+
+        '<li><b>Budget: '+fmtNum(BUDGET)+' URL characters.</b> No browser documents a limit on URL '+
+          'length and Safari publishes none, so this ceiling is a conservative guess rather than a '+
+          'measured one. It leaves about 48\u00a0KB for the gzipped app; the HTML files in this repo '+
+          'compressed 2.4&ndash;3.5&times;, which puts the ceiling somewhere near 140&ndash;170\u00a0KB '+
+          'of HTML. The meter above measures your file exactly. A single base64 image is usually over '+
+          'the limit on its own.</li>'+
+        '<li><b>Needs <code>CompressionStream</code></b> \u2014 Safari 16.4, Firefox 113, Chrome 80 '+
+          'or later.</li>'+
+        '<li><b>This page has to load before your app can.</b> The app itself is in the link and '+
+          'needs no network, but the few KB of engine that unpacks it still comes from the web, and '+
+          'there is no service worker caching it yet. So an app with no external resources works on '+
+          'a plane only for as long as your browser happens to have this page cached.</li>'+
         '<li><b>Storage is per device and per app.</b> Each app\u2019s localStorage keys are prefixed with '+
           'its data name, so two apps can both use <code>data</code> without clashing. Keep the data name '+
           'the same and you can rebuild the app without losing what you saved.</li>'+
-        '<li><b>Back it up.</b> Home-screen apps are exempt from Safari’s 7-day storage eviction, but '+
-          'apps you only ever open in a browser tab are not. Use Export above.</li>'+
+        '<li><b>Back it up.</b> WebKit exempts home-screen apps from Safari\u2019s 7-day storage '+
+          'eviction, but apps you only ever open in a browser tab are not exempt. Use Export above. '+
+          'The backup holds your app data only \u2014 never your private key.</li>'+
         '<li><b>Signing.</b> Only apps signed with your key will run here, so a link from anyone '+
           'else is refused before it can touch your saved data. Your own apps do share one address, '+
           'so they can read each other\u2019s data &mdash; keep that in mind for anything sensitive.</li>'+
@@ -600,10 +625,12 @@ function renderChecks(html){
   }
   if(a.hosts.length){
     row('!','warn', a.hosts.length+' external host'+(a.hosts.length>1?'s':''),
-      esc(a.hosts.join(', '))+' &mdash; fine online, but these fail in Airplane Mode. If a font or '+
-      'stylesheet does not load the app still works but looks wrong. If a script does not load it usually will not run.');
+      esc(a.hosts.join(', '))+' &mdash; fetched every time the app opens, so it needs a working '+
+      'connection. If a font or stylesheet does not load the app still works but looks wrong. If a '+
+      'script does not load it usually will not run at all.');
   }else{
-    row('✓','ok','Fully self-contained','No external requests. Works offline.');
+    row('✓','ok','Fully self-contained','Everything this app needs is in the link \u2014 no fonts, '+
+      'scripts or images fetched from anywhere else.');
   }
   if(a.storage) row('\u2713','ok','Saves data','Stored under this app\u2019s own key, separate from your other apps.');
   if(a.claude)  row('i','info','Built for claude.ai storage',
@@ -657,7 +684,9 @@ function renderDataHint(){
     }
   }catch(e){}
   $('dataHint').textContent = n
-    ? n+' saved value'+(n>1?'s':'')+' across your apps, about '+fmtBytes(bytes*2)+'. Export writes a JSON file you can import on another device.'
+    ? n+' saved value'+(n>1?'s':'')+' across your apps, about '+fmtBytes(bytes*2)+'. Export writes a '+
+      'JSON file you can import on another device. Your private key is left out of it, so bring that '+
+      'from your password manager instead.'
     : 'No app data stored yet.';
 }
 
@@ -869,6 +898,7 @@ function exportAll(){
   try{
     for(var i=0;i<localStorage.length;i++){
       var k=localStorage.key(i);
+      if(k===KEY_SLOT) continue;              /* never put the private key in a file */
       if(k && (k.lastIndexOf(NS_PREFIX,0)===0 || k.lastIndexOf(SELF_NS,0)===0)){
         out.data[k]=localStorage.getItem(k); n++;
       }
@@ -888,7 +918,7 @@ function importBackup(file){
     if(!obj || obj.format!=='sideload-backup' || !obj.data){
       alert('That does not look like a sideload backup.'); return;
     }
-    var keys=Object.keys(obj.data);
+    var keys=Object.keys(obj.data).filter(function(k){ return k!==KEY_SLOT; });
     if(!keys.length){ alert('The backup is empty.'); return; }
     var clash=keys.filter(function(k){ try{ return localStorage.getItem(k)!==null; }catch(e){ return false; } });
     var msg='Import '+keys.length+' key'+(keys.length>1?'s':'')+' from '+
@@ -1056,46 +1086,349 @@ var installed=[];
 });
 
 /* --- Claude artifact-runtime stand-in --------------------------------- */
+/* Artifacts from claude.ai reach their storage through window.claude, which
+ * only exists on claude.ai. This is a local stand-in built from the published
+ * runtime contract (0.2.96), backed by this app's own namespaced localStorage.
+ *
+ * It follows the contract's shapes deliberately. claude.use(name) resolving
+ * null is the contract's signal for "not available here", and artifacts are
+ * written to branch on it -- so every capability we do NOT implement (room,
+ * sample, artifact, assets, downloads, files, mcp, comments) degrades the way
+ * its author intended. What has no defined handling is a namespace whose
+ * methods are missing, which crashes. So the two we do implement, db and
+ * user, implement the whole surface.
+ *
+ * None of this is in the payload: the engine injects it at run time, so it
+ * costs the app's URL budget nothing.                                      */
 if(CFG.claudeShim && !window.claude){
-  var mkDoc=function(path){
-    var k='__claudedb__:'+path;
-    function read(){
-      try{ var s=window.localStorage.getItem(k); return s==null?null:JSON.parse(s); }
-      catch(e){ return null; }
+
+  /* ---- paths ---------------------------------------------------------- */
+  /* Even segment count is a document, odd is a collection. The contract has
+     doc()/collection() throw a TypeError synchronously on a bad path, which
+     is a bug in the app to fix rather than a store condition to handle. */
+  var SEG = /^[A-Za-z0-9_\-.~:@+]{1,200}$/;
+  function parts(path, want){
+    var segs = String(path).split('/');
+    if(segs.length > 16) throw new TypeError('db path has '+segs.length+' segments, at most 16 allowed: '+path);
+    for(var i=0;i<segs.length;i++){
+      if(segs[i]==='.' || segs[i]==='..' || !SEG.test(segs[i]))
+        throw new TypeError('db path segment '+JSON.stringify(segs[i])+' is not allowed: '+path);
     }
-    function write(o){ window.localStorage.setItem(k,JSON.stringify(o)); }
-    return {
-      path:path,
-      get:function(){ return Promise.resolve().then(function(){
-        var v=read();
-        return { exists:v!==null, id:path.split('/').pop(), data:function(){ return v; } };
-      }); },
-      set:function(o){ return Promise.resolve().then(function(){ write(o); }); },
-      update:function(o){ return Promise.resolve().then(function(){
-        var cur=read()||{};
-        Object.keys(o).forEach(function(kk){ cur[kk]=o[kk]; });
-        write(cur);
-      }); },
-      delete:function(){ return Promise.resolve().then(function(){
-        window.localStorage.removeItem(k);
-      }); }
+    var even = segs.length % 2 === 0;
+    if(want==='doc' && !even)
+      throw new TypeError('db.doc() needs an even number of path segments, got '+segs.length+': '+path);
+    if(want==='collection' && even)
+      throw new TypeError('db.collection() needs an odd number of path segments, got '+segs.length+': '+path);
+    return segs;
+  }
+
+  /* ---- store ---------------------------------------------------------- */
+  var DBP = '__claudedb__:';              /* one localStorage entry per document */
+  var LEASE = '__claudelease__:';
+  function reject(code, message){ return Promise.reject({code:code, message:message}); }
+
+  function readDoc(path){
+    try{ var s=window.localStorage.getItem(DBP+path); return s==null?null:JSON.parse(s); }
+    catch(e){ return null; }
+  }
+  function checkBody(data){
+    if(!data || typeof data!=='object' || Array.isArray(data))
+      return 'a document body must be a plain object';
+    var json;
+    try{ json=JSON.stringify(data); }catch(e){ return 'a document body must be JSON-serialisable'; }
+    if(json===undefined) return 'a document body must be JSON-serialisable';
+    if(json.length > 262144) return 'a document body must be at most 256 KiB, this one is '+json.length+' bytes';
+    return null;
+  }
+  function writeDoc(path, data){
+    window.localStorage.setItem(DBP+path, JSON.stringify(data));
+    notify(path);
+  }
+
+  /* ---- snapshots ------------------------------------------------------ */
+  /* fromCache is false because this store is local: what we read IS the
+     store, so there is never an unconfirmed view to warn about. Likewise
+     hasPendingWrites, since a write has landed by the time it returns. */
+  var META = Object.freeze({fromCache:false, hasPendingWrites:false});
+  function snapOf(path){
+    var v = readDoc(path);
+    return Object.freeze({
+      id: path.split('/').pop(),
+      exists: v!==null,
+      data: function(){ return v===null?undefined:v; },
+      metadata: META
+    });
+  }
+
+  /* ---- listeners ------------------------------------------------------ */
+  /* onSnapshot is the contract's primary read path, so it has to be real.
+     Our own writes notify directly; another tab on the same origin arrives
+     as a storage event, which is what that event is for. */
+  var watchers = [];
+  function notify(path){
+    watchers.slice().forEach(function(w){ if(w.covers(path)) w.fire(); });
+  }
+  try{
+    window.addEventListener('storage', function(){ watchers.slice().forEach(function(w){ w.fire(); }); });
+  }catch(e){}
+  function subscribe(covers, deliver, onError){
+    var dead=false;
+    var w={ covers:covers, fire:function(){ if(!dead) try{ deliver(); }catch(e){
+      dead=true; if(onError) onError({code:'invalid_argument', message:String(e&&e.message||e)}); } } };
+    watchers.push(w);
+    Promise.resolve().then(w.fire);        /* first delivery is always async */
+    return function(){
+      dead=true;
+      var i=watchers.indexOf(w); if(i>=0) watchers.splice(i,1);
     };
-  };
-  var mkColl=function(p){
-    return {
-      doc:function(id){ return mkDoc(p+'/'+id); },
-      list:function(){ return Promise.resolve({docs:[]}); },
-      query:function(){ return Promise.resolve({docs:[]}); }
+  }
+
+  /* ---- queries -------------------------------------------------------- */
+  function idsIn(coll){
+    var pre=DBP+coll+'/', out=[];
+    try{
+      for(var i=0;i<window.localStorage.length;i++){
+        var k=window.localStorage.key(i);
+        if(k && k.lastIndexOf(pre,0)===0){
+          var rest=k.slice(pre.length);
+          if(rest && rest.indexOf('/')<0) out.push(rest);   /* direct children only */
+        }
+      }
+    }catch(e){}
+    return out.sort();                     /* document id order, the contract's default */
+  }
+  function matches(body, f){
+    var v = body ? body[f.field] : undefined, t = f.value;
+    switch(f.op){
+      case '==': return v===t;
+      case '!=': return v!==t;
+      case '<':  return v<t;
+      case '<=': return v<=t;
+      case '>':  return v>t;
+      case '>=': return v>=t;
+      case 'in':     return Array.isArray(t) && t.indexOf(v)>=0;
+      case 'not-in': return Array.isArray(t) && t.indexOf(v)<0;
+      case 'array-contains': return Array.isArray(v) && v.indexOf(t)>=0;
+    }
+    return false;
+  }
+  var OPS = ['==','!=','<','<=','>','>=','in','not-in','array-contains'];
+
+  function mkQuery(coll, spec){
+    function run(){
+      var snaps = idsIn(coll).map(function(id){ return snapOf(coll+'/'+id); });
+      if(spec.where.length) snaps = snaps.filter(function(s){
+        var body=s.data();
+        return spec.where.every(function(f){ return matches(body,f); });
+      });
+      if(spec.order){
+        var fld=spec.order.field, desc=spec.order.dir==='desc';
+        snaps = snaps.slice().sort(function(a,b){
+          var x=a.data()?a.data()[fld]:undefined, y=b.data()?b.data()[fld]:undefined;
+          if(x===undefined && y===undefined) return 0;
+          if(x===undefined) return 1;        /* missing field sorts last, both ways */
+          if(y===undefined) return -1;
+          if(x===y) return 0;
+          return (x<y ? -1 : 1) * (desc ? -1 : 1);
+        });
+      }
+      if(spec.limit!=null) snaps = snaps.slice(0, spec.limit);
+      return snaps;
+    }
+    function snapshot(prev){
+      var docs=run(), byId={};
+      docs.forEach(function(d,i){ byId[d.id]={doc:d, i:i}; });
+      var changes=[];
+      if(!prev){
+        docs.forEach(function(d,i){ changes.push({type:'added', doc:d, oldIndex:-1, newIndex:i}); });
+      }else{
+        prev.forEach(function(p,oi){
+          var now=byId[p.id];
+          if(!now) changes.push({type:'removed', doc:p, oldIndex:oi, newIndex:-1});
+          else if(now.doc.data()!==p.data() &&
+                  JSON.stringify(now.doc.data())!==JSON.stringify(p.data()))
+            changes.push({type:'modified', doc:now.doc, oldIndex:oi, newIndex:now.i});
+        });
+        var was={}; prev.forEach(function(p){ was[p.id]=true; });
+        docs.forEach(function(d,i){ if(!was[d.id]) changes.push({type:'added', doc:d, oldIndex:-1, newIndex:i}); });
+      }
+      return Object.freeze({
+        docs: docs, size: docs.length, empty: docs.length===0,
+        docChanges: function(){ return changes; }, metadata: META
+      });
+    }
+    var q = {
+      where: function(field, op, value){
+        if(OPS.indexOf(op)<0) throw new TypeError('db query operator '+JSON.stringify(op)+' is not supported');
+        if(spec.where.length>=10) throw new TypeError('a db query takes at most 10 filters');
+        return mkQuery(coll, {where:spec.where.concat([{field:field,op:op,value:value}]),
+                              order:spec.order, limit:spec.limit});
+      },
+      orderBy: function(field, dir){
+        return mkQuery(coll, {where:spec.where, order:{field:field, dir:dir==='desc'?'desc':'asc'},
+                              limit:spec.limit});
+      },
+      limit: function(n){
+        if(!(n>=1 && n<=1000)) throw new TypeError('db query limit must be between 1 and 1000, got '+n);
+        return mkQuery(coll, {where:spec.where, order:spec.order, limit:Math.floor(n)});
+      },
+      get: function(){ return Promise.resolve().then(function(){ return snapshot(null); }); },
+      onSnapshot: function(next, onError){
+        var prev=null;
+        return subscribe(
+          function(p){ return p.lastIndexOf(coll+'/',0)===0; },
+          function(){ var s=snapshot(prev); prev=s.docs; next(s); },
+          onError);
+      }
     };
-  };
-  window.claude={
-    __sideload:true,
-    use:function(name){ return Promise.resolve().then(function(){
-      if(name==='db')   return { doc:mkDoc, collection:mkColl };
-      if(name==='user') return { id:function(){ return Promise.resolve('sideload-device'); },
-                                 name:function(){ return Promise.resolve('This device'); } };
-      return null;
-    }); }
+    return q;
+  }
+
+  /* ---- refs ----------------------------------------------------------- */
+  var ID_CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  function freshId(){
+    var out='';
+    for(var i=0;i<20;i++) out+=ID_CHARS.charAt(Math.floor(Math.random()*ID_CHARS.length));
+    return out;
+  }
+
+  function mkDoc(path){
+    parts(path,'doc');
+    var ref = {
+      id: path.split('/').pop(),
+      path: path,
+      get: function(){ return Promise.resolve().then(function(){ return snapOf(path); }); },
+      set: function(data){
+        var bad=checkBody(data);
+        if(bad) return reject('invalid_argument', bad);
+        return Promise.resolve().then(function(){ writeDoc(path, data); });
+      },
+      update: function(data){
+        var bad=checkBody(data);
+        if(bad) return reject('invalid_argument', bad);
+        var cur=readDoc(path);
+        /* the contract has update() require the document to exist */
+        if(cur===null) return reject('invalid_argument',
+          'update() needs the document to exist already: '+path+'. Use set() to create it.');
+        return Promise.resolve().then(function(){
+          writeDoc(path, merge(cur, data));
+        });
+      },
+      delete: function(){
+        return Promise.resolve().then(function(){
+          window.localStorage.removeItem(DBP+path);
+          notify(path);
+        });
+      },
+      onSnapshot: function(next, onError){
+        return subscribe(function(p){ return p===path; },
+                         function(){ next(snapOf(path)); }, onError);
+      },
+      collection: function(sub){ return mkColl(path+'/'+sub); },
+      acquire: function(opts){
+        if(!opts || typeof opts.holder!=='string' || !opts.holder)
+          return reject('invalid_argument','acquire() needs a holder string');
+        return Promise.resolve().then(function(){
+          var ttl = opts.ttlMs ? Math.max(1000, Math.min(600000, opts.ttlMs)) : 30000;
+          var now = Date.now(), cur = null;
+          try{ var s=window.localStorage.getItem(LEASE+path); cur = s==null?null:JSON.parse(s); }catch(e){}
+          var held = cur && cur.until>now && cur.holder!==opts.holder;
+          if(held) return {acquired:false, expiresAt:new Date(cur.until).toISOString()};
+          var version = ((cur&&cur.version)||0)+1, until = now+ttl;
+          window.localStorage.setItem(LEASE+path,
+            JSON.stringify({holder:opts.holder, until:until, version:version}));
+          if(opts.data){
+            var body=readDoc(path);
+            writeDoc(path, merge(body||{}, opts.data));
+          }
+          return {acquired:true, version:version,
+                  expiresAt:new Date(until).toISOString(), holder:opts.holder};
+        });
+      }
+    };
+    return ref;
+  }
+
+  /* nested objects merge recursively; arrays and scalars replace wholesale */
+  function merge(into, from){
+    var out={}, k;
+    for(k in into) if(Object.prototype.hasOwnProperty.call(into,k)) out[k]=into[k];
+    for(k in from) if(Object.prototype.hasOwnProperty.call(from,k)){
+      var a=out[k], b=from[k];
+      out[k] = (a && b && typeof a==='object' && typeof b==='object' &&
+                !Array.isArray(a) && !Array.isArray(b)) ? merge(a,b) : b;
+    }
+    return out;
+  }
+
+  function mkColl(path){
+    parts(path,'collection');
+    var q = mkQuery(path, {where:[], order:null, limit:null});
+    q.path = path;
+    q.doc = function(id){ return mkDoc(path+'/'+(id==null?freshId():id)); };
+    q.add = function(data){
+      var ref=q.doc();
+      return ref.set(data).then(function(){ return ref; });
+    };
+    return q;
+  }
+
+  /* ---- user ----------------------------------------------------------- */
+  /* One device, one person, and that person owns the app -- so the three
+     permission reads say yes, and an artifact that gates its editing UI on
+     canEdit() stays usable. The two that describe claude.ai's own platform
+     actions say no, because there is nothing here to publish to.
+     The id is the fixed string it has always been: apps already store data
+     under data/users/<id>/, and changing it would orphan what they saved. */
+  var UID = 'sideload-device';
+  var AVATAR = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    '<rect width="64" height="64" rx="32" fill="#5b9dff"/>' +
+    '<circle cx="32" cy="25" r="11" fill="#fff" opacity=".9"/>' +
+    '<path d="M11 64c0-13 9-21 21-21s21 8 21 21z" fill="#fff" opacity=".9"/></svg>');
+  var COLOR = '#5b9dff';
+  function profileFor(id){
+    return {id:id, name:'', avatarUrl:AVATAR, color:COLOR, email:null,
+            isMe:id===UID, guest:false};
+  }
+  var CAN = {'data.write':true, 'files.write':false, 'assets.write':false, 'people.add':false};
+  var userNs = Object.freeze({
+    isOwner: function(){ return Promise.resolve(true); },
+    canEdit: function(){ return Promise.resolve(true); },
+    can: function(name){ return Promise.resolve(CAN[name]===true); },
+    id:   function(){ return Promise.resolve(UID); },
+    me:   function(){ return Promise.resolve({id:UID, name:'', avatarUrl:AVATAR,
+                        color:COLOR, email:null, isOwner:true, canEdit:true}); },
+    profiles: function(ids){
+      var list = typeof ids==='string' ? [ids] : (ids||[]);
+      var out={};
+      list.forEach(function(id){ if(typeof id==='string') out[id]=profileFor(id); });
+      return Promise.resolve(out);
+    },
+    /* "" rather than a friendly label: the contract makes display strings
+       falsy when unavailable, so  name || "you"  is what apps are written
+       against, and a stand-in name would defeat it. */
+    name:      function(){ return Promise.resolve(''); },
+    avatarUrl: function(){ return Promise.resolve(AVATAR); },
+    search:    function(){ return Promise.resolve([]); },
+    email:     function(){ return Promise.resolve(null); }
+  });
+
+  var dbNs = Object.freeze({
+    doc: function(p){ return mkDoc(p); },
+    collection: function(p){ return mkColl(p); }
+  });
+
+  var memo = {};
+  window.claude = {
+    __sideload: true,
+    use: function(name){
+      return Promise.resolve().then(function(){
+        if(Object.prototype.hasOwnProperty.call(memo,name)) return memo[name];
+        memo[name] = name==='db' ? dbNs : name==='user' ? userNs : null;
+        return memo[name];
+      });
+    }
   };
 }
 

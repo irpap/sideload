@@ -299,50 +299,218 @@ head('3. Storage namespacing shim');
 }
 
 /* ================= 4. Claude runtime stand-in ================= */
+/* Checked against the published runtime contract (0.2.96): the shapes an
+   artifact generated on claude.ai is written against. */
 head('4. Claude artifact-runtime stand-in');
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const threw = (fn) => { try { fn(); return null; } catch (e) { return e; } };
+/* the prelude runs in its own vm context, so its TypeError is a different
+   constructor than ours -- compare the name, not the identity */
+const throwsType = (fn) => { const e = threw(fn); return !!e && e.name === 'TypeError'; };
+const rejected = async (p) => { try { await p; return null; } catch (e) { return e; } };
 {
   const backing = new FakeStorage();
   const { win } = runApp(backing, 'fully-mine', true);
   const claude = win.claude;
   ok('window.claude installed', !!claude && typeof claude.use === 'function');
+  eq('window.claude exposes only use()',
+     Object.keys(claude).filter((k) => k !== '__sideload').join(','), 'use');
 
   const [db, user] = await Promise.all([claude.use('db'), claude.use('user')]);
-  const id = await user.id();
-  ok('user.id() resolves', typeof id === 'string' && id.length > 0, id);
+  eq('use() of unknown capability is null', await claude.use('nope'), null);
+  ok('use() is memoized', (await claude.use('db')) === db);
+  ok('namespaces are frozen', Object.isFrozen(db) && Object.isFrozen(user));
 
-  /* exactly the call shape "Fully Mine.html" uses */
-  const ref = db.doc('data/users/' + id + '/plan');
+  /* ---- path grammar: a TypeError at the call site, not a store error ---- */
+  ok('doc() rejects an odd segment count', throwsType(() => db.doc('tasks')));
+  ok('collection() rejects an even segment count', throwsType(() => db.collection('tasks/t1')));
+  ok('a path segment with an illegal character throws', throwsType(() => db.doc('tasks/a b')));
+  ok('a dot-dot segment throws', throwsType(() => db.doc('tasks/..')));
+  ok('data/users/<id> is a collection, not a document',
+     threw(() => db.collection('data/users/u1')) === null);
+
+  /* ---- one document ---------------------------------------------------- */
+  const id = await user.id();
+  const ref = db.doc('data/users/' + id + '/plan');   /* the shape Fully Mine uses */
   const empty = await ref.get();
   eq('missing doc .exists', empty.exists, false);
-  eq('missing doc .data()', empty.data(), null);
+  eq('missing doc .data() is undefined', empty.data(), undefined);
+  eq('snapshot .id is the last segment', empty.id, 'plan');
+  eq('snapshot .metadata.fromCache', empty.metadata.fromCache, false);
 
-  await ref.set({ version: 3, amount: 6000 });
+  const noDoc = await rejected(ref.update({ a: 1 }));
+  eq('update() on a missing doc rejects', noDoc && noDoc.code, 'invalid_argument');
+
+  const badBody = await rejected(ref.set('not an object'));
+  eq('set() of a non-object rejects', badBody && badBody.code, 'invalid_argument');
+  eq('set() of an array rejects', (await rejected(ref.set([1, 2]))).code, 'invalid_argument');
+
+  await ref.set({ version: 3, amount: 6000, nested: { keep: 1, drop: 2 }, list: [1, 2] });
   const snap = await ref.get();
   eq('doc .exists after set', snap.exists, true);
-  eq('doc .data() round-trips',
-     JSON.stringify(snap.data()), JSON.stringify({ version: 3, amount: 6000 }));
+  eq('doc .data() round-trips', snap.data().amount, 6000);
 
-  await ref.update({ amount: 7000 });
-  eq('doc .update merges',
-     JSON.stringify((await ref.get()).data()),
-     JSON.stringify({ version: 3, amount: 7000 }));
+  await ref.update({ amount: 7000, nested: { drop: 9 }, list: [3] });
+  const merged = (await ref.get()).data();
+  eq('update() merges top-level fields', merged.amount, 7000);
+  eq('update() merges nested objects recursively', merged.nested.keep, 1);
+  eq('update() overwrites a nested field', merged.nested.drop, 9);
+  eq('update() replaces an array wholesale', JSON.stringify(merged.list), '[3]');
+  eq('update() leaves untouched fields alone', merged.version, 3);
 
   const dbKey = [...backing.m.keys()].find((k) => k.includes('__claudedb__'));
   ok('db writes land in the app namespace',
      !!dbKey && dbKey.startsWith('__sideload__fully-mine:'), dbKey);
 
+  /* ---- onSnapshot: the contract's primary read path --------------------- */
+  let seen = [], calls = 0;
+  const un = ref.onSnapshot((s) => { calls++; seen.push(s.exists ? s.data().amount : null); });
+  eq('onSnapshot does not deliver synchronously', calls, 0);
+  await tick();
+  eq('onSnapshot delivers current state first', calls, 1);
+  await ref.set({ amount: 1 });
+  await tick();
+  eq('onSnapshot fires on a write', calls, 2);
+  eq('onSnapshot carries the new body', seen[1], 1);
+  un();
+  await ref.set({ amount: 2 });
+  await tick();
+  eq('unsubscribe stops delivery', calls, 2);
+
+  let otherDoc = 0;
+  const un2 = db.doc('elsewhere/x').onSnapshot(() => { otherDoc++; });
+  await tick();
+  await ref.set({ amount: 3 });
+  await tick();
+  eq('a listener ignores writes to other documents', otherDoc, 1);
+  un2();
+
   await ref.delete();
   eq('doc .delete', (await ref.get()).exists, false);
+}
 
-  eq('use() of unknown capability', await claude.use('nope'), null);
+/* ============ 4a. collections, queries and leases ============ */
+head('4a. Collections, queries and leases');
+{
+  const backing = new FakeStorage();
+  const { win } = runApp(backing, 'tasks-app', true);
+  const db = await win.claude.use('db');
+  const tasks = db.collection('tasks');
+  eq('collection .path', tasks.path, 'tasks');
+
+  await tasks.doc('b').set({ title: 'b', done: false, pri: 2, tags: ['home'] });
+  await tasks.doc('a').set({ title: 'a', done: true, pri: 1, tags: ['work', 'home'] });
+  await tasks.doc('c').set({ title: 'c', done: false, pri: 3, tags: [] });
+
+  const all = await tasks.get();
+  eq('collection get() size', all.size, 3);
+  eq('collection get() is not empty', all.empty, false);
+  eq('results default to document id order',
+     all.docs.map((d) => d.id).join(''), 'abc');
+
+  eq('where ==', (await tasks.where('done', '==', false).get()).docs.map((d) => d.id).join(''), 'bc');
+  eq('where !=', (await tasks.where('done', '!=', false).get()).docs.map((d) => d.id).join(''), 'a');
+  eq('where >', (await tasks.where('pri', '>', 1).get()).docs.map((d) => d.id).join(''), 'bc');
+  eq('where <=', (await tasks.where('pri', '<=', 2).get()).docs.map((d) => d.id).join(''), 'ab');
+  eq('where in', (await tasks.where('pri', 'in', [1, 3]).get()).docs.map((d) => d.id).join(''), 'ac');
+  eq('where not-in', (await tasks.where('pri', 'not-in', [1, 3]).get()).docs.map((d) => d.id).join(''), 'b');
+  eq('where array-contains',
+     (await tasks.where('tags', 'array-contains', 'home').get()).docs.map((d) => d.id).join(''), 'ab');
+  eq('filters combine',
+     (await tasks.where('done', '==', false).where('pri', '>', 2).get()).docs.map((d) => d.id).join(''), 'c');
+  ok('an unsupported operator throws', throwsType(() => tasks.where('pri', '~=', 1)));
+
+  eq('orderBy asc', (await tasks.orderBy('pri').get()).docs.map((d) => d.id).join(''), 'abc');
+  eq('orderBy desc', (await tasks.orderBy('pri', 'desc').get()).docs.map((d) => d.id).join(''), 'cba');
+  eq('limit', (await tasks.orderBy('pri', 'desc').limit(2).get()).docs.map((d) => d.id).join(''), 'cb');
+  ok('a limit outside 1..1000 throws', throwsType(() => tasks.limit(0)));
+
+  await tasks.doc('d').set({ title: 'd' });            /* no pri field */
+  eq('a document missing the sort field sorts last',
+     (await tasks.orderBy('pri').get()).docs.map((d) => d.id).join(''), 'abcd');
+  await tasks.doc('d').delete();
+
+  /* nested documents are not direct children of the collection */
+  await db.doc('tasks/a').collection('notes').doc('n1').set({ text: 'hi' });
+  eq('a subcollection document does not appear in the parent collection',
+     (await tasks.get()).size, 3);
+  eq('a subcollection reads back',
+     (await db.doc('tasks/a/notes/n1').get()).data().text, 'hi');
+
+  /* ---- generated ids ---- */
+  const added = await tasks.add({ title: 'added' });
+  ok('add() mints an id', added.id.length === 20, added.id);
+  eq('add() wrote the body', (await added.get()).data().title, 'added');
+  const minted = tasks.doc();
+  ok('doc() with no id mints a fresh one', minted.id !== added.id);
+  await added.delete();
+
+  /* ---- query subscriptions ---- */
+  let snaps = [];
+  const un = tasks.where('done', '==', false)
+    .onSnapshot((s) => snaps.push(s.docChanges().map((c) => c.type + ':' + c.doc.id).join(',')));
+  await tick();
+  eq('first query snapshot is all-added', snaps[0], 'added:b,added:c');
+  await tasks.doc('b').set({ title: 'b2', done: false, pri: 2, tags: [] });
+  await tick();
+  eq('a changed document reports modified', snaps[1], 'modified:b');
+  await tasks.doc('c').set({ title: 'c', done: true, pri: 3, tags: [] });
+  await tick();
+  eq('leaving the query reports removed', snaps[2], 'removed:c');
+  eq('the removal carries the last body it saw', snaps.length, 3);
+  un();
+
+  /* ---- leases ---- */
+  const lock = db.doc('locks/turn');
+  const first = await lock.acquire({ holder: 'tab-1', ttlMs: 5000 });
+  eq('acquire() grants a free lease', first.acquired, true);
+  ok('a granted lease reports an expiry', typeof first.expiresAt === 'string');
+  eq('a granted lease echoes the holder', first.holder, 'tab-1');
+  eq('another holder is refused', (await lock.acquire({ holder: 'tab-2' })).acquired, false);
+  eq('the same holder renews', (await lock.acquire({ holder: 'tab-1' })).acquired, true);
+  eq('a lease with no holder rejects',
+     (await rejected(lock.acquire({}))).code, 'invalid_argument');
+  await lock.acquire({ holder: 'tab-1', data: { turn: 7 } });
+  eq('acquire() merges its data into the body', (await lock.get()).data().turn, 7);
+}
+
+/* ============ 4b. the user capability ============ */
+head('4b. The user capability');
+{
+  const { win } = runApp(new FakeStorage(), 'u', true);
+  const user = await win.claude.use('user');
+
+  eq('id() is the stable device id', await user.id(), 'sideload-device');
+  eq('isOwner()', await user.isOwner(), true);
+  eq('canEdit()', await user.canEdit(), true);
+  eq('can("data.write")', await user.can('data.write'), true);
+  eq('can("files.write") -- no platform to publish to', await user.can('files.write'), false);
+  eq('can() of an unknown name', await user.can('whatever'), false);
+
+  const me = await user.me();
+  eq('me().id matches id()', me.id, await user.id());
+  eq('me().name is "" so `name || "you"` works', me.name, '');
+  ok('me().avatarUrl is renderable', /^data:image\/svg\+xml,/.test(me.avatarUrl));
+  eq('me().isOwner', me.isOwner, true);
+  eq('me().email', me.email, null);
+
+  const ps = await user.profiles(['sideload-device', 'someone-else']);
+  eq('profiles() returns an entry per id requested', Object.keys(ps).length, 2);
+  eq('profiles() marks the viewer', ps['sideload-device'].isMe, true);
+  eq('an unresolvable profile has name ""', ps['someone-else'].name, '');
+  eq('profiles() accepts a bare string', Object.keys(await user.profiles('x')).length, 1);
+
+  eq('name() is ""', await user.name(), '');
+  eq('search() finds nobody', (await user.search('a')).length, 0);
+  eq('email()', await user.email(), null);
 
   /* with the stand-in off, window.claude must stay absent */
   const off = runApp(new FakeStorage(), 'no-shim', false).win;
   ok('stand-in respects the toggle', !off.claude);
 }
 
-/* ============ 4b. runner guards installed by the prelude ============ */
-head('4b. Runner guards');
+/* ============ 4c. runner guards installed by the prelude ============ */
+head('4c. Runner guards');
 {
   const direct = fakeEnv(new FakeStorage(), 'direct-app');
   ok('error handler installed', !!direct.listeners.window.error);
@@ -363,7 +531,7 @@ head('4b. Runner guards');
  * loads no outside scripts it cannot have produced one, and reporting it
  * would be a false alarm -- usually a browser extension tripping over
  * document.write replacing the document.                                  */
-head("4c. Errors that are not the app's fault");
+head("4d. Errors that are not the app's fault");
 {
   const notesIn = (env) =>
     env.appended.filter((e) => String(e.className || '').indexOf('n') === 0).length;
@@ -398,7 +566,7 @@ head("4c. Errors that are not the app's fault");
 }
 
 /* ============ 5. real artifacts: fidelity, budget, analysis ============ */
-head('4d. analyze() tells scripts apart from stylesheets');
+head('4e. analyze() tells scripts apart from stylesheets');
 {
   const fonts = ctx.analyze('<link href="https://fonts.googleapis.com/css2?family=X" rel="stylesheet">');
   eq('google fonts is an external host', fonts.hosts.length, 1);
