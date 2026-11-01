@@ -186,7 +186,7 @@ The compiler allows URLs up to 64,000 characters. This is a conservative budget;
 
 Neither the URI specification nor the WHATWG URL Standard sets a maximum length. Chromium documents a 2 MB cap; Apple publishes no Safari limit. RFC 7230's often-quoted 8,000-octet figure is a recommended minimum for HTTP request lines and does not apply to fragments, which browsers never send.
 
-If a link gets truncated, signature verification fails and the app cannot run. The engine displays a cut-short link error.
+If a link gets truncated, signature verification fails and the engine displays an error instead of running the app.
 
 ### Compression
 
