@@ -24,7 +24,7 @@ Browsers do not send URL fragments in HTTP requests, so GitHub Pages serves `ind
 `index.html` is both the compiler and the runtime:
 
 - With no fragment, it shows the compiler, where you paste HTML and sign it.
-- With a fragment, it verifies the signature against its compiled-in public key, decompresses the payload and runs the app.
+- With a fragment, it verifies the signature against its hardcoded public key, decompresses the payload and runs the app.
 
 iOS Add to Home Screen saves the whole URL, including the fragment. Each app gets its own icon, title and storage namespace.
 
@@ -78,7 +78,7 @@ With the engine cached, an app that fetches no external resources can open offli
 
 The title, `apple-mobile-web-app-title` and a generated icon are set at runtime to give each app its own label and tile.
 
-There is no `<link rel="manifest">`: a manifest's `start_url` would strip the fragment and launch the empty compiler. The service worker preserves this behavior because it only controls the response to a request.
+There is no `<link rel="manifest">`: a manifest's `start_url` would strip the fragment and launch the empty compiler. The service worker keeps the fragment intact because it only controls the response to a request.
 
 ## Security model
 
@@ -88,7 +88,7 @@ The intended use is running code you wrote or have read, on an origin you contro
 
 `document.write` runs app code on the engine's origin with full access to its `localStorage`. Accepting arbitrary fragments would let anyone construct a link containing JavaScript that could read data stored by the instance's apps.
 
-Each payload is signed with an ECDSA P-256 private key. The matching public key is compiled into `index.html`. The engine verifies the signature before decompressing or rendering the payload. Links signed with another key or altered after signing are rejected before any app code runs, with no prompt to override the check.
+Each payload is signed with an ECDSA P-256 private key. The matching public key is hardcoded in `index.html`. The engine verifies the signature before decompressing or rendering the payload. Links signed with another key or altered after signing are rejected before any app code runs, with no prompt to override the check.
 
 Each instance trusts its own public key. A fork with its own key cannot publish executable links to the original instance, and the original cannot publish to the fork. This signature check allows the instance to accept links while keeping all apps on one origin.
 
@@ -282,7 +282,7 @@ The suite covers:
 
 Files named on the command line are also checked for byte fidelity and size.
 
-The service worker runs in a sandbox with a fake cache, a fake network and a manually fired timer. Tests exercise the network-first path, offline fallback and stall race.
+The service worker runs in a sandbox with a fake cache, a fake network and a manually fired timer. Tests exercise the network-first path, offline fallback and stalled-connection timeout.
 
 Home-screen behavior and real browser caches require testing on a phone.
 
