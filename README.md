@@ -1,378 +1,374 @@
 # sideload
 
-sideload runs a single-file HTML app from a URL. The app's entire source lives in the link,
-so publishing one is a paste rather than a deploy, and you can do it from a phone.
+`sideload` runs single-file HTML apps from a URL. The app's entire source lives in the URL
+fragment, so publishing one means pasting HTML into a page and saving the resulting link —
+no repo change, commit or deploy per app.
 
 ## Why it exists
 
-I kept asking Claude for small tools while away from home — an itinerary with the next
-train on it, a budget planner. Claude writes you a complete, self-contained HTML file in
-about twenty seconds, and then you cannot use it, because iOS will not run a local `.html`
-file as a web page. Safari has no way to open one. To get it onto the home screen you have
-to put it on the web, and putting it on the web means a repo, a commit, a deploy, and a
-laptop you did not bring.
+LLMs are good at producing small self-contained HTML tools: a calculator, a tracker, a
+checklist, a few hundred lines of HTML, CSS and JavaScript using `localStorage` for state.
+On a desktop such a file can be opened directly from disk. On iOS it cannot — Safari has no
+way to open a local `.html` file and run it as a web page — so getting one onto the home
+screen normally means committing it to a repository and deploying it to a host. That is a
+disproportionate amount of work for one file, and it needs a computer.
 
-That overhead is absurd for one file, and it is the same overhead whether the file is a
-mortgage calculator or a packing list. So sideload moves the file into the URL instead of
-onto a server. You paste HTML into a page, it hands you a link, and the link is the app:
+`sideload` removes the per-app deploy by putting the app in the URL rather than on a server.
+The engine is deployed once to GitHub Pages; after that, pasting HTML into it produces a
+signed link containing the app:
 
 ```
 you.github.io/sideload/#2-SXg9kR7mQw…jTn.H4sIAAAAAAAA…
-                        │ │           └ your app, gzipped and base64url-encoded
-                        │ └ signature over those bytes
-                        └ format version
+                        │ │              └ the app, gzipped then base64url-encoded
+                        │ └ ECDSA P-256 signature over those bytes
+                        └ payload format version
 ```
 
-Everything after the `#` is the URL **fragment**, and a fragment is not part of an HTTP
-request — the browser keeps it and sends the rest. So GitHub serves you the page without
-ever learning which app you opened. Add the link to your home screen and iOS keeps the
-whole thing, fragment included, so the app comes back with its own name and icon.
+Everything after `#` is the URL **fragment**. Browsers do not send fragments in HTTP
+requests, so GitHub Pages serves `index.html` without ever seeing the payload.
 
-## The three decisions that make it work
+`index.html` is both the compiler and the runtime:
 
-These are one chain, not three features, and the order matters.
+- **without a fragment** it shows the compiler, where HTML is pasted and signed;
+- **with a fragment** it verifies the signature against the hardcoded public key,
+  decompresses the payload, and runs the app.
 
-**Apps need to remember things.** The obvious way to render HTML you have decoded is to
-hand it to an iframe as a `data:` URL, which is what
-[itty.bitty.site](https://github.com/arfct/itty-bitty) has done since 2018. The problem is
-that a `data:` URL lands on an **opaque origin**, and on an opaque origin `localStorage`
-does not return empty — it throws `SecurityError`. Every app that saves anything breaks on
-the first write. That was no cost to itty-bitty, which exists to share documents, but it
-rules out the entire category I wanted: tools that keep your numbers between visits.
-Sandboxing an iframe without `allow-same-origin` has the same effect, and adding
-`allow-same-origin` back buys no protection, because a frame can remove its own `sandbox`
-attribute and escape.
+iOS **Add to Home Screen** saves the complete URL, fragment included, so each app becomes
+its own icon with its own title and its own persistent storage.
 
-So sideload renders with `document.write` into the live page instead. The app replaces the
-engine in the document it is already in, which keeps the real origin — so storage works —
-keeps the URL — so Add to Home Screen captures the fragment — and gives the app the real
-viewport, which matters more than it sounds: inside an iframe, dragging an
-`<input type=range>` sideways on iOS scrolls the page instead of moving the slider.
+---
 
-**That creates an exposure.** Once the fragment runs on your real origin with your real
-storage, *anyone's* fragment would. Someone could send you a link to your own site with
-their code in it, and it would run with access to everything your apps had saved. On a
-shared origin that is not a hypothetical, it is the default.
+## How it works
 
-**So apps are signed.** You hold an ECDSA P-256 private key; your public key is committed
-into `index.html`. The engine verifies the signature *before* it decompresses or renders
-anything, so a link that is not yours never runs at all and there is no warning to click
-past. This is what makes a single origin safe enough to use, which in turn is what keeps
-publishing free of a deploy.
+### Rendering with `document.write` rather than a `data:` iframe
 
-### Why not just isolate each app instead
+[itty.bitty.site](https://github.com/arfct/itty-bitty) has been storing pages in URL
+fragments since 2018. It renders them by passing the decoded HTML to an iframe as a
+`data:text/html` URL. That is fine for static documents, but a `data:` URL executes in an
+**opaque origin**, where `localStorage` does not return empty — it throws `SecurityError`.
+Every app that saves anything fails on its first write. Sandboxed iframes behave the same
+way unless `allow-same-origin` is set, which defeats the sandbox, because framed script can
+remove its own `sandbox` attribute.
 
-Isolation is the textbook answer: give every app its own origin and the browser separates
-their storage for you. Three properties, and you can have two:
+`sideload` therefore writes the decoded HTML into the top-level document with
+`document.write`. Replacing the document in place has three effects:
 
-| | no deploy per app | isolated per app | free |
+1. **The origin is preserved** (`https://<you>.github.io`), so `localStorage` works.
+2. **The URL is preserved**, so Add to Home Screen captures the fragment.
+3. **The app gets the top-level viewport**, which avoids an iOS Safari behaviour where
+   dragging an `<input type="range">` inside an iframe scrolls the outer page instead of
+   moving the slider.
+
+Before the app's own scripts run, the engine injects a prelude as the first script in the
+written document. The prelude replaces `window.localStorage` with a proxy that prefixes
+every key with the app's data name, so two apps on one instance can both use a key called
+`data` without colliding.
+
+### Signing, because the origin is shared
+
+`document.write` runs the fragment on the real origin with full access to `localStorage`.
+Without verification, anyone could construct a link to that origin containing arbitrary
+JavaScript, and it would execute with access to everything the instance's apps had saved.
+
+Every payload is therefore signed with an **ECDSA P-256** private key, and the corresponding
+public key is hardcoded in `index.html`. The engine verifies the signature *before*
+decompressing or rendering anything, so an unsigned or altered link never executes and there
+is no warning to dismiss. Signing is what makes a single shared origin viable, which in turn
+is what keeps publishing free of a deploy step.
+
+### Why not isolate each app on its own origin
+
+Browser storage isolation requires a separate origin per app. In practice two of these three
+properties are available at once:
+
+| Approach | No deploy per app | Isolated origin per app | Free |
 |---|---|---|---|
-| one origin, signed payloads ← this | yes | no | yes |
-| one hostname per app | no | yes | yes |
-| wildcard DNS | yes | yes | no |
+| **Single origin, signed payloads** (this) | Yes | No | Yes |
+| One hostname per app | No | Yes | Yes |
+| Wildcard DNS (`*.example.com`) | Yes | Yes | No |
 
-A hostname per app means deploying per app, and then the server already holds the HTML and
-the fragment is doing no work — you have rebuilt ordinary static hosting and deleted the
-reason the project exists. Wildcard DNS is the right answer and it costs money: Cloudflare
-serves proxied wildcard records on Enterprise plans, Netlify wildcard subdomains start at
-Pro, and GitHub Pages cannot issue a wildcard certificate at all, because its certificates
-cover one custom domain exactly as specified. The cheapest honest version is a small VPS
-with a DNS-01 wildcard certificate, around $70 a year.
+A hostname per app requires a deploy per app, at which point the server already holds the
+HTML and the fragment is doing no work — that is ordinary static hosting. Wildcard DNS gives
+arbitrary subdomains without deploys but is not available free: GitHub Pages cannot issue a
+wildcard certificate, because its certificates cover one custom domain exactly as specified;
+Cloudflare serves proxied wildcard records on Enterprise plans; Netlify wildcard subdomains
+start at Pro. The cheapest version that actually works is a small VPS with a DNS-01 wildcard
+certificate, around $70 a year.
 
-Signing was the trade that let the free single-origin option stop being reckless.
+### Offline
+
+The app payload needs no network, since it travels in the link. The engine that unpacks it
+does, so `sw.js` caches it in a service worker.
+
+There is exactly one response to cache, which is what makes this simple. Because the
+fragment is not part of the request, every app ever published arrives as the same `GET` for
+the same page — one cached response covers all of them, including apps published later. The
+worker knows nothing about apps. This is unrelated to the reason there is no manifest: a
+manifest's `start_url` would drop the fragment, whereas a service worker never touches
+navigation targets, only responses.
+
+The worker is network-first rather than cache-first. Serving the cache unconditionally would
+stop a pushed fix reaching a device, and a cached engine still holding an old `PUBLIC_KEY`
+would refuse links signed with a new one. So it requests the network, falls back to the
+cache, and races a 2.5-second timer so a stalled connection does not produce a blank page. A
+late response still refreshes the cache for the next launch.
 
 ---
 
 ## Setup
 
-Once, and then you can publish from your phone indefinitely.
+Done once, on a computer, because step 3 requires a commit. After that, apps can be
+published from a phone.
 
-### 1. Deploy your own copy
+### 1. Deploy an instance
 
-Fork this repo. In **Settings → Pages**, set **Source** to `Deploy from a branch` — GitHub
-defaults to "GitHub Actions", so this needs changing — and **Branch** to `main`, folder
-`/ (root)`. Your copy goes live at `https://<you>.github.io/sideload/`, usually within a
-minute or two.
+Fork this repository. Under **Settings → Pages**, set **Source** to `Deploy from a branch`
+(GitHub defaults to "GitHub Actions") and **Branch** to `main`, folder `/ (root)`. The
+instance goes live at `https://<you>.github.io/sideload/`, usually within a minute or two.
 
-It will refuse to run anything yet, because no key is set.
+It refuses to run anything until a public key is configured.
 
-### 2. Create your key
+### 2. Generate a keypair
 
-Open your copy and tap **Create key**. Your browser generates the keypair locally and shows
-you both halves.
+Open the deployed URL and tap **Create key**. The browser generates an ECDSA P-256 keypair
+locally and shows both halves.
 
-The **private key** is the only thing that can publish to your site, and it cannot be
-recovered. Put it in your password manager before you close the page. The **public key** is
-meant to be published.
+- **Private key** — signs and publishes apps to the instance. It cannot be recovered, so
+  save it to a password manager before closing the page.
+- **Public key** — committed into `index.html` so the instance can verify links.
 
-There is also `node tools/keygen.mjs` if you prefer a terminal, though the browser is the
-better option: a terminal leaves your private key in shell history and scrollback.
+`node tools/keygen.mjs` does the same thing from a terminal. The browser is preferable,
+because a terminal leaves the private key in shell history and scrollback.
 
-### 3. Commit your public key
+### 3. Commit the public key
 
-Replace the empty declaration near the top of `index.html` with the line the page shows
-you:
+Replace the empty declaration near the top of `index.html` with the line the compiler
+displays:
 
 ```js
 /* INSTANCE PUBLIC KEY  --  replace this with your own. See the README. */
 var PUBLIC_KEY = 'BG9x...your key...';
 ```
 
-Commit, push, wait for Pages to redeploy. Reloading the compiler should now say **Ready to
+Commit and push. Once Pages has redeployed, reloading the compiler should report **Ready to
 publish**.
 
-### 4. Put the key on your phone
+### 4. Import the private key on each publishing device
 
-Open your copy on the phone, tap **Import key**, paste the private key from your password
-manager. That device can now publish. Repeat for any other device you want to publish from;
-devices that only *use* your apps need nothing at all.
-
-Do this while you still have your password manager to hand, rather than when you first want
-to publish something.
+Open the instance on the phone, tap **Import key**, and paste the private key from the
+password manager. Repeat on any other device that should be able to publish. Devices that
+only *run* the apps need nothing.
 
 ---
 
-## Using it
+## Usage
 
-**Publishing.** Paste HTML into the box. The app name fills in from the `<title>` tag and a
-data name is derived from it. Check the size meter, tap **Open app**, then Share → **Add to
-Home Screen**.
+**Publishing.** Paste HTML into the compiler. The app name is taken from the `<title>` tag,
+and a data name — the `localStorage` prefix — is derived from it. Check the size meter, tap
+**Open app**, then **Share → Add to Home Screen**.
 
-**Updating.** Paste the new HTML and keep the **same data name**. The data name is the
-prefix your app's storage keys live under, so keeping it is what reattaches the new build to
-what you already saved. The link itself changes — the app is inside it, so new code is
-necessarily a new link — which means your old home-screen icon still points at the old
-version. Delete it and add the new one. There is no way around that part.
+**Updating.** Paste the new HTML and keep the **same data name**, which is what reattaches
+the new build to the existing storage keys. Because the source lives in the URL, new code
+necessarily means a new URL, so the old home-screen icon still points at the old version:
+delete it and add the new link.
 
-**Sharing an app.** Send the link however you like; the recipient needs nothing from you.
-Their browser fetches your engine from your site, checks your signature against the public
-key baked into it, and runs the app. They can add it to their home screen too, and their
-data stays in their own browser. Your private key is not involved and never leaves your
-device — `localStorage` is per-origin *and* per-device, and never travels over the network.
+**Sharing an app.** The recipient needs nothing. Their browser fetches the engine from the
+publishing instance, verifies the signature against its public key, and runs the app
+locally. Their data stays in their own browser. The private key is not involved and does not
+travel: `localStorage` is per-origin *and* per-device, and is never sent over the network.
 
-Links run to tens of thousands of characters, which is well past what a QR code holds and
-more than some chat apps will carry intact. AirDrop, Messages, email and notes are fine.
+Links run to tens of thousands of characters, past QR code capacity and past what some chat
+clients will carry intact. AirDrop, Messages, email and notes handle them.
 
-**Sharing the tool.** Send someone this repo. They set up their own copy with their own key,
-and the two instances cannot publish to each other. That is why it is safe for many people
-to use this at once: everybody runs only their own code, on their own origin.
+**Sharing the tool.** Anyone who wants to publish their own apps forks the repository and
+generates their own keypair. Each instance trusts only its own public key, so two instances
+cannot publish to each other.
 
 ---
 
-## What it costs you
+## Limitations
 
-**A size ceiling, which is a guess.** The budget is 64,000 URL characters. No browser
-documents a limit on URL length: the URI spec sets none, the WHATWG URL Standard sets none,
-and the 8,000-octet figure people cite is RFC 7230's recommended floor for an HTTP
-*request line*, which cannot apply here because the fragment is never in a request.
-Chromium documents its own 2 MB cap; Apple publishes nothing for Safari. And none of that is
-really the constraint anyway — what matters is how much iOS keeps in a home-screen bookmark,
-which Apple documents nowhere. 64,000 is a conservative number chosen here, and the only
-measurement behind it is that a link of about 21,000 characters has survived Add to Home
-Screen on an iPhone.
+**URL length budget: 64,000 characters.** Neither the URI specification nor the WHATWG URL
+Standard defines a maximum URL length. The 8,000-octet figure commonly cited is RFC 7230's
+recommended floor for an HTTP *request line*, which does not apply here because the fragment
+is never sent. Chromium documents a 2 MB cap of its own; Apple publishes no figure for
+Safari. The binding constraint is how long a URL iOS retains in a home-screen bookmark,
+which is undocumented. 64,000 is therefore a conservative chosen ceiling, not a measured
+one; the only measurement behind it is that a link of roughly 21,000 characters has survived
+Add to Home Screen on an iPhone.
 
-If a link does get cut short, the signature catches it: truncation changes the bytes,
-verification fails, and nothing runs. The engine says so rather than showing a blank screen.
+A truncated link fails signature verification, because truncation changes the bytes. The
+engine reports it as a cut-short link rather than rendering a broken page.
 
-**Compression that varies.** The app is gzipped and then base64url-encoded, which adds a
-third back, so the useful figure is HTML bytes per URL character rather than the gzip ratio
-alone. Measured on the HTML in this repo:
+**Compression.** Payloads are gzipped and then base64url-encoded, which adds a third back,
+so the useful figure is HTML bytes per URL character rather than the gzip ratio alone.
+Measured on the HTML in this repository:
 
-| file | raw | gzipped | ratio |
+| File | Raw | Gzipped | Ratio |
 |---|---|---|---|
-| `index.html` | 74,325 | 24,890 | 2.99× |
-| `samples/storage-probe.html` | 5,235 | 2,203 | 2.38× |
-| a 53 KB artifact | 54,243 | 15,580 | 3.48× |
+| `index.html` | 74,325 B | 24,890 B | 2.99× |
+| `samples/storage-probe.html` | 5,235 B | 2,203 B | 2.38× |
+| a 53 KB app | 54,243 B | 15,580 B | 3.48× |
 
-That 53 KB artifact became a 21,411-character URL, a third of the budget. At those ratios
-the ceiling sits somewhere near 140–170 KB of HTML, but five files is not a law — the meter
-in the compiler measures your actual file, and that is the number to trust. A single base64
-image is usually over the limit by itself.
+That 53 KB file produces a 21,411-character URL, about a third of the budget. At these
+ratios the ceiling corresponds to roughly 140–170 KB of HTML, but three files are not a
+distribution — the compiler measures the actual file before publishing, and that is the
+number to use. Inline base64 images will exceed the budget on their own.
 
-**Offline usually works.** The app needs no network because it is in the link. The engine
-that unpacks it is cached by a service worker, so an app that fetches nothing external opens
-without a connection. There is only one thing for that worker to cache, which is what makes
-this simple: since the fragment is not part of the request, every app you will ever publish
-arrives as the same `GET` for the same page, so one cached response covers all of them,
-including ones you publish later.
+**Offline is likely, not guaranteed.** With the engine cached, an app that fetches nothing
+external opens without a connection. However, iOS clears storage for sites it considers
+idle, home-screen apps fare better than tabs but have no guarantee, and the first load on a
+new device must come from the network.
 
-It is network-first rather than cache-first, deliberately. Serving the cached engine
-unconditionally would mean a pushed fix never reached your phone, and a cached engine still
-holding your old `PUBLIC_KEY` would refuse links signed with your new one. So it asks the
-network, falls back to the cache, and races a 2.5-second timer so a stalled connection does
-not leave you looking at nothing.
+**Browser requirements.** `CompressionStream` (Safari 16.4+, Chrome 80+, Firefox 113+) and
+Web Crypto, which browsers expose only in a secure context — `https://` or `localhost`, not
+`file://`.
 
-"Usually" is doing real work in that first sentence. iOS clears storage for sites it decides
-are idle, home-screen apps fare better than tabs but have no guarantee, and the first load on
-a new device has to come from the web. It is worth relying on for a flight; it is not worth
-relying on for something you would be stuck without.
+**External resources.** CDN scripts, stylesheets and remote fonts load normally but add a
+network dependency on every open. The compiler scans pasted HTML, lists the external hosts
+it finds, and distinguishes a stylesheet (the app runs, looks wrong) from a script (the app
+usually does not run).
 
-**Browser requirements.** `CompressionStream` means Safari 16.4, Firefox 113, Chrome 80 or
-later. Signature checking uses Web Crypto, which browsers only expose in a secure context,
-so the page has to be served over https or from `localhost` — not from a `file://` path.
-
-**External resources.** CDN scripts, web fonts and remote images still load, and still work.
-They just add a network dependency on every open. The compiler lists every external host it
-finds, and distinguishes a stylesheet (the app works, looks wrong) from a script (the app
-usually will not run).
-
-**Storage eviction.** WebKit exempts home-screen web apps from Safari's seven-day
-script-writable storage cap. Apps you only ever open in a browser tab are not exempt. Use
-**Export all app data** for anything you would mind losing. That backup contains your app
-data and deliberately not your private key, which belongs in your password manager.
+**Storage eviction.** WebKit deletes script-writable storage after seven days without user
+interaction for ordinary browser tabs, and exempts web apps added to the home screen. Use
+**Export all app data** to back up anything that matters. That export contains app data and
+deliberately excludes the private key, which belongs in a password manager.
 
 ---
 
 ## Running Claude artifacts
 
-Artifacts work as they are: copy the HTML out of the chat, paste it in, publish.
+Single-file artifacts from Claude can be pasted and published as they are.
 
-Some artifacts store data through `window.claude`, which only exists on claude.ai. sideload
-installs a local stand-in built from the published runtime contract (0.2.96) and backed by
-the app's own namespaced `localStorage`, so those apps keep working and save to your device
-instead. Anything already in your Claude account stays there, so the app starts empty.
+Artifacts that persist state call `window.claude`, which exists only on claude.ai. The
+engine injects a local stand-in backed by the app's namespaced `localStorage`, built against
+the published runtime contract (0.2.96).
 
-Two capabilities are implemented in full — `db`, including documents, collections,
-`where`/`orderBy`/`limit` queries, `onSnapshot` subscriptions and document leases, and
-`user`, which reports you as the owner of your own app. The rest (`room`, `sample`,
-`artifact`, `assets`, `downloads`, `files`, `mcp`, `comments`) are not implemented, and that
-is deliberate rather than unfinished: the contract has `claude.use(name)` resolve `null` for
-anything unavailable in a given view, and artifacts are written to branch on it, so an app
-that wanted one of those degrades the way its author intended. A half-implemented namespace
-would be worse than an absent one, because an object with missing methods has no defined
-handling and simply throws.
+- **Implemented in full:** `db` — documents, collections, `where`/`orderBy`/`limit` queries,
+  `onSnapshot` subscriptions, generated ids and document leases — and `user`, which reports
+  the viewer as the owner of the app.
+- **Not implemented:** `room`, `sample`, `artifact`, `assets`, `downloads`, `files`, `mcp`,
+  `comments`. This is deliberate rather than unfinished. The contract has `claude.use(name)`
+  resolve `null` for anything unavailable in a given view, and artifacts are written to
+  branch on that, so an app wanting one of these degrades as its author intended. A
+  half-implemented namespace would be worse than an absent one, since an object with missing
+  methods has no defined handling and simply throws.
 
-The stand-in is injected by the engine at run time, so none of it is in the payload and it
-costs your app's budget nothing.
+The stand-in is part of `index.html` and is injected at runtime, so it adds nothing to the
+app's URL budget.
+
+Data already stored in a Claude account stays there; a sideloaded artifact starts empty.
 
 ### Compared with publishing the artifact on claude.ai
 
-Publishing on claude.ai is one click and better for showing someone a demo. The differences
-that are structural rather than subject to product changes:
+Publishing on claude.ai takes one click and is the better option for showing someone a demo.
+The differences that are structural rather than subject to product change:
 
-| | published artifact | sideload |
+| | Published on claude.ai | sideload |
 |---|---|---|
-| where saved data lives | Anthropic's servers | the viewer's own browser |
-| who controls the hosting | Anthropic | you |
-| what a viewer needs | depends on how you shared it | the link |
-
-If you want a small private tool whose data sits on your phone and which keeps working
-regardless of anybody's subscription, this. If you want to show someone something in one
-click, publish the artifact.
+| Where saved data lives | Anthropic's servers | the viewer's own browser |
+| Who controls hosting | Anthropic | the publishing GitHub account |
+| What a viewer needs | depends on sharing settings | the link |
 
 ---
 
-## Security
+## Security model
 
-The model is that every app on your instance is one you pasted in yourself.
+The intended use is running code that the instance's owner wrote or has read, on an origin
+they control.
 
-**Signing holds up the part that faces outward.** Nobody can construct a link that runs
-their code on your origin, because the engine verifies against your public key before it
-unpacks anything. That is the whole attack that a shared origin would otherwise invite, and
-it is closed. It also means a fork is harmless to you: another person's instance has their
-key, and neither of you can publish to the other.
+**1. Links from anyone else cannot execute.** The engine verifies the ECDSA signature
+against the hardcoded public key before decompressing or rendering the fragment. Links built
+on another instance, or altered in transit, are rejected before any code runs. A fork is
+therefore harmless in both directions: each instance holds its own key.
 
-**Signing does not hide your code.** gzip and base64 are encoding, not encryption. Anyone
-with a link can decode it, read your HTML, modify it and run it elsewhere. They cannot run a
-modified version on your origin.
+**2. Payloads are encoded, not encrypted.** gzip and base64url hide nothing. Anyone holding
+a link can decode the fragment and read the HTML, modify it, and run it elsewhere — they
+just cannot run a modified version on the original origin. Do not put API keys or secrets in
+an app that will be shared.
 
-**Your own apps are not isolated from each other.** They share one origin, so they share one
-`localStorage`. Each app's keys are prefixed with its data name, and the engine replaces
-`window.localStorage` inside the app with a namespaced proxy — but that prevents accidents,
-not attacks. The proxy is installed as a configurable own property on `window`, and the
-native accessor lives on `Window.prototype`, so `delete window.localStorage` restores it;
-appending a same-origin iframe and reading `frame.contentWindow.localStorage` does the same.
-Either is one line.
+**3. Apps on one instance are not isolated from each other.** The `localStorage` proxy
+prefixes keys to prevent accidental collisions, not deliberate access. All apps run on the
+same origin, so app script can bypass the proxy: it is installed as a configurable own
+property on `window` while the native accessor lives on `Window.prototype`, so
+`delete window.localStorage` restores it, and reading `frame.contentWindow.localStorage`
+from a same-origin iframe does the same. Either is one line.
 
-What that reaches includes **the private key**, which is stored as a plain string in
-`localStorage`. So the real policy is the simple one: do not paste code you have not read.
-The first-order cost of ignoring it is that one bad app can read everything your other apps
-saved. The second-order cost is worse, because a key that leaves your device lets whoever
-holds it publish to your origin indefinitely, including to people you have shared links
-with, and recovering means a new key, an edited `index.html`, a push, republishing every app
-and every home-screen icon breaking.
+That reaches every app's stored data, and also **the signing private key**, which is held as
+a plain string in `localStorage`. The operative rule is therefore to publish only HTML that
+has been read. The first-order cost of breaking it is that one app can read what the others
+saved; the second-order cost is larger, because a key that leaves the device lets whoever
+holds it publish to that origin indefinitely, including to people who have been sent links,
+and recovery means a new key, an edited `index.html`, a push, republishing every app, and
+every existing home-screen icon breaking.
 
-Two consequences worth acting on:
+Two practical consequences:
 
-- Keep sideload on a GitHub account that hosts nothing with real secrets. One
-  `github.io` origin covers every repo on the account, so any page you host there can read
-  this storage.
-- If this ever stops being only yours, the fix is origin separation, not more checks in the
-  engine. Splitting the compiler onto a different host from the runner would put the key on
-  an origin that never runs guest code at all.
+- Host the instance on a GitHub account that serves nothing sensitive. One `github.io`
+  origin covers every repository on the account, so any page hosted there can read this
+  storage.
+- Separating the compiler and the runner onto different origins would put the key on an
+  origin that never runs app code. That is the right fix if an instance ever stops being
+  single-user; it costs an extra one-time deploy and no per-app deploy.
 
 ---
 
 ## Reference
 
 ```
-index.html              the whole engine: compiler, runner, signing, storage, launcher
+index.html              the engine: compiler, runner, signing, storage proxy, launcher
+sw.js                   service worker; caches the engine for offline use
 icon.png                fallback apple-touch-icon
-sw.js                   caches the engine so apps open without a network
-tools/keygen.mjs        generate a keypair from the command line
+tools/keygen.mjs        generate an ECDSA P-256 keypair from the command line
 samples/
   storage-probe.html    writes generic storage keys; two copies show apps stay separate
-test/run.mjs            headless tests
+test/run.mjs            headless test suite
 test/mklinks.mjs        dev helper: short redirect stubs, so a 20,000-character URL is
                         tappable on a phone
 ```
 
-`index.html` opens with a map of its nine sections. It is one file in plain ES5 with no
-build step, deliberately: it is the thing being published, it has to run on whatever Safari
-is on your phone, and the whole trust boundary should be readable in one sitting.
+`index.html` is plain ES5 with no build step, and opens with a map of its nine sections. The
+lack of tooling is deliberate: the file is the thing being published, it has to run on
+whatever Safari version is on the phone, and the whole trust boundary should be readable in
+one sitting.
 
 ### Tests
 
-```
-node test/run.mjs                              # samples only
-node test/run.mjs ~/Downloads/some-app.html    # plus your own files
+```sh
+node test/run.mjs                              # bundled samples only
+node test/run.mjs ~/Downloads/some-app.html    # plus specified files
 ```
 
-188 checks, plus three more for each file you pass: that apps survive the codec byte for
-byte, that every way of faking or tampering with a signature is refused, that apps cannot
-see each other's storage, that the `window.claude` stand-in matches its contract, and that
-real files fit the budget. The service worker is driven in a sandbox with a fake cache, a
-fake network and a timer fired by hand, so the network-first path and the offline fallback
-are exercised rather than assumed. Anything involving the home screen, or a real browser
-cache, has to be tested on a phone.
+188 checks, plus three per file passed in: lossless round-trip through the codec, signature
+verification and every tampering case, `localStorage` namespace separation, `window.claude`
+stand-in conformance, and URL budget. The service worker is driven in a sandbox with a fake
+cache, a fake network and a hand-fired timer, so the network-first path, the offline
+fallback and the stall race are exercised rather than assumed.
+
+Anything involving the home screen, or a real browser cache, has to be tested on a phone.
 
 ### iOS specifics
 
-`apple-mobile-web-app-capable`, the status bar style and a fallback `apple-touch-icon` sit in
-`index.html` as static tags, because iOS reads them when you tap Add to Home Screen and
-every app is the same page with a different fragment — one set of tags covers all of them.
-The app name, `apple-mobile-web-app-title` and a generated icon are added at run time so each
-app gets its own label and coloured tile. There is deliberately no `<link rel="manifest">`:
-a manifest's `start_url` would drop the fragment and open the empty compiler instead of your
-app.
+`apple-mobile-web-app-capable`, the status bar style and a fallback `apple-touch-icon` are
+static in `index.html`, because iOS reads them when the bookmark is saved and every app is
+the same document with a different fragment — one set of tags covers all of them. The title,
+`apple-mobile-web-app-title` and a generated icon are set at runtime so each app gets its
+own label and tile. `<link rel="manifest">` is deliberately omitted: a manifest's
+`start_url` would strip the fragment and launch the empty compiler instead of the app.
 
 ### Troubleshooting
 
-**"This site has no signing key"** — `PUBLIC_KEY` is still empty in `index.html`. See step 3.
-
-**"This key does not match your site"** — usually a fork where step 3 was skipped, so the
-engine still trusts the original author's key. The compiler shows the line to paste.
-
-**"Refused: this link is not signed by your key"** — the signature check doing its job. The
-link was built on another instance or altered after it was made.
-
-**"This link looks cut short"** — a long link that failed verification, which is what
-truncation looks like. Something shortened it in transit. Rebuild from a smaller app.
-
-**"Insecure context"** — Web Crypto needs https. Use your Pages URL, not a `file://` path.
-
-**A blank app with no error** — check the compiler's external-host warning. A CDN script
-that fails to load will usually stop the app dead.
-
-**An engine change has not reached the phone** — the service worker is network-first, so a
-reload while online should pick it up. If it does not, the cached copy is being served
-because the request stalled; try again on a better connection. Bumping `CACHE` in `sw.js`
-forces every device to discard the old cache on its next visit.
-
-## Prior art
-
-[itty.bitty.site](https://github.com/arfct/itty-bitty) has been putting pages in URLs since
-2018, using LZMA, which compresses better than gzip does. It renders into
-`iframe.src = "data:text/html;base64,…"`, which is why it cannot run an app that saves
-anything, and that is a reasonable trade for sharing documents. sideload is narrower on
-purpose: your own tools, with storage that works, and signing so that only your code runs.
+- **"This site has no signing key"** — `PUBLIC_KEY` is still empty in `index.html`; see
+  setup step 3.
+- **"This key does not match your site"** — the imported private key does not correspond to
+  the committed `PUBLIC_KEY`. Common when forking without doing step 3.
+- **"Refused: this link is not signed by your key"** — the link was signed by a different
+  key, or altered after signing.
+- **"This link looks cut short"** — signature verification failed on a link near the budget,
+  which is what truncation looks like. Something shortened it in transit.
+- **"Insecure context"** — Web Crypto requires `https://` or `localhost`, not `file://`.
+- **Blank screen, no error** — check the compiler's external-host warning. A CDN script that
+  fails to load usually halts the app.
+- **An engine change has not reached a device** — the worker is network-first, so a reload
+  while online should pick it up. Bumping `CACHE` in `sw.js` forces every device to discard
+  the old cache on its next visit.
