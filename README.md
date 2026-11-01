@@ -220,9 +220,7 @@ The compiler scans pasted HTML and lists the external hosts it finds. It disting
 
 ### Storage eviction
 
-Offline access and stored data are not guaranteed. iOS can clear storage for sites it treats as idle. Home-screen apps survive longer than browser tabs, but have no guarantee.
-
-WebKit deletes script-writable storage after seven days without user interaction for ordinary browser tabs. Web apps added to the home screen are exempt from that rule.
+WebKit deletes script-writable storage after seven days without user interaction in ordinary browser tabs. Home-screen web apps are exempt from that rule, but iOS can still evict their storage, so offline access and saved data are not guaranteed.
 
 Use **Export all app data** for anything that matters. The export includes app data but excludes the private key, which belongs in a password manager.
 
