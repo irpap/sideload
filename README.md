@@ -180,19 +180,17 @@ Anyone who wants to publish their own apps forks the repository and generates th
 
 ## Limitations
 
-### URL length budget: 64,000 characters
+### URL length
 
-The compiler allows URLs up to 64,000 characters. This is a conservative budget; testing has only confirmed that a roughly 21,000-character link survives Add to Home Screen on an iPhone. Apple does not document how much of a URL a home-screen bookmark preserves.
+The app travels in the link, so a larger app means a longer URL. The compiler reports the HTML size, the gzipped size and the final URL length for whatever you paste.
 
-Neither the URI specification nor the WHATWG URL Standard sets a maximum length. Chromium documents a 2 MB cap; Apple publishes no Safari limit. RFC 7230's often-quoted 8,000-octet figure is a recommended minimum for HTTP request lines and does not apply to fragments, which browsers never send.
+Nothing caps that length. Neither the URI specification nor the WHATWG URL Standard sets a maximum. Chromium documents a 2 MB cap; Apple publishes no Safari limit. RFC 7230's often-quoted 8,000-octet figure is a recommended minimum for HTTP request lines and does not apply to fragments, which browsers never send. The limit that would matter here is how much of a URL iOS keeps in a home-screen bookmark, and Apple does not document it.
+
+The longest link confirmed working on an iPhone is roughly 21,000 characters. The test suite signs and verifies a 423,683-character payload, so the engine itself is not the constraint. Anything between those two numbers is untested.
 
 If a link gets truncated, signature verification fails and the engine displays an error instead of running the app.
 
-### Compression
-
-Payloads are gzipped and then base64url-encoded. Base64url adds back about a third, so the useful measure is HTML bytes per URL character.
-
-Measurements from the HTML in this repository:
+Payloads are gzipped and then base64url-encoded. Base64url adds back about a third, so the useful measure is HTML bytes per URL character. Measurements from the HTML in this repository:
 
 | File | Raw | Gzipped | Ratio |
 |---|---|---|---|
@@ -200,9 +198,7 @@ Measurements from the HTML in this repository:
 | `samples/storage-probe.html` | 5,235 B | 2,203 B | 2.38x |
 | a 53 KB app | 54,243 B | 15,580 B | 3.48x |
 
-The 53 KB file produces a 21,411-character URL, about a third of the budget. At these ratios, the ceiling is approximately 140 to 170 KB of HTML. Three files are too small a sample to establish a distribution; use the compiler's measurement for each app.
-
-Inline base64 images will exceed the budget on their own.
+The 53 KB file produces a 21,411-character URL. Three files are too small a sample to establish a distribution; use the compiler's measurement for each app. Inline base64 images are what usually make a link very long.
 
 ### Browser requirements
 
@@ -235,7 +231,7 @@ The stand-in fully implements:
 
 `room`, `sample`, `artifact`, `assets`, `downloads`, `files`, `mcp` and `comments` are intentionally unimplemented. The contract specifies that `claude.use(name)` resolves to `null` for a namespace unavailable in a given view. Artifacts branch on that result and can degrade as their authors intended. Returning a partial namespace would expose missing methods with no defined handling, causing exceptions.
 
-The stand-in lives in `index.html` and is injected at runtime, so it adds nothing to the app's URL budget.
+The stand-in lives in `index.html` and is injected at runtime, so it adds nothing to the app's URL length.
 
 Data stored in a Claude account stays there. A sideloaded artifact starts empty.
 
@@ -278,7 +274,7 @@ The suite covers:
 - Signature verification and each way of tampering with a payload.
 - `localStorage` namespace separation.
 - Conformance of the `window.claude` stand-in.
-- The URL budget.
+- Round-trip and tamper rejection at 423,683 payload characters.
 
 Files named on the command line are also checked for byte fidelity and size.
 
@@ -291,7 +287,7 @@ Home-screen behavior and real browser caches require testing on a phone.
 - **"This site has no signing key"** means `PUBLIC_KEY` is still empty in `index.html`. See setup step 3.
 - **"This key does not match your site"** means the private key in the browser does not correspond to the committed `PUBLIC_KEY`. This is common when forking without completing step 3.
 - **"Refused: this link is not signed by your key"** means the link was signed by a different key or altered after signing.
-- **"This link looks cut short"** means signature verification failed on a link near the budget. Something shortened it in transit.
+- **"This link did not verify"** means the signature does not match the payload. The link was built on another instance, altered after signing, or truncated in transit.
 - **"Insecure context"** means Web Crypto is unavailable. Use `https://` or `localhost`; a `file://` path will not work.
 - **A blank screen with no error** usually means a CDN script in the app failed to load. Check the compiler's external-host warning.
 - **An engine change has not reached a device.** The worker tries the network first, so reloading while online should pick it up. Bumping `CACHE` in `sw.js` makes every device discard the old cache on its next visit.
