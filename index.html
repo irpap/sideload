@@ -489,7 +489,7 @@ function compilerHTML(){
         '<button class="btn sm" id="pasteBtn">Paste from clipboard</button>'+
         '<button class="btn sm" id="fileBtn">Choose .html file&hellip;</button>'+
         '<button class="btn sm" id="copyHtmlBtn">Copy HTML</button>'+
-        '<button class="btn sm" id="clearBtn">Clear</button>'+
+        '<button class="btn sm" id="clearBtn">Clear HTML</button>'+
         '<input type="file" id="file" accept=".html,.htm,text/html" hidden>'+
       '</div>'+
     '</div>'+
@@ -946,8 +946,9 @@ function showCompiler(){
   $('fileBtn').onclick=function(){ $('file').click(); };
   $('file').onchange=function(){ loadFile(this.files[0]); this.value=''; };
   $('clearBtn').onclick=function(){
-    $('src').value=''; $('title').value=''; $('slug').value='';
-    delete $('slug').dataset.touched; recompute();
+    $('src').value='';
+    recompute();
+    $('src').focus();          /* brings up the keyboard, and its paste bar */
   };
   /* For handing an app back to Claude, or moving it to another device.
      My apps > Edit loads the source into the box, then this copies it. */
