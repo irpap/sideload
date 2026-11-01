@@ -68,9 +68,6 @@ textarea.drop{border-color:var(--accent);background:color-mix(in srgb,var(--acce
 .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:13px}
 /* meter */
 .meter{margin-top:4px}
-.bar{height:7px;background:var(--panel2);border-radius:99px;overflow:hidden;border:1px solid var(--line)}
-.bar i{display:block;height:100%;background:var(--ok);transition:width .18s ease,background .18s ease}
-.bar.warn i{background:var(--warn)} .bar.bad i{background:var(--bad)}
 .nums{display:flex;justify-content:space-between;gap:10px;margin-top:8px;font-size:12px;color:var(--dim);flex-wrap:wrap}
 .nums b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
 .hint{font-size:12.5px;color:var(--faint);margin-top:9px}
@@ -146,10 +143,6 @@ details ul{padding-left:19px;margin:8px 0}
 
 var NS_PREFIX = '__sideload__';          /* app data:  __sideload__<slug>:<key>   */
 var SELF_NS   = '__sideload$self:';      /* own state: '$' can't occur in a slug  */
-var BUDGET    = 64000;                   /* chosen ceiling, not a documented one: */
-                                         /* no browser publishes a URL limit, and */
-                                         /* what iOS keeps in a home-screen       */
-                                         /* bookmark is undocumented too          */
 var VERSION   = '2';
 var MAX_RECENT= 24;
 
@@ -445,23 +438,12 @@ function runApp(payload){
   }).catch(function(err){
     var m = (err && err.message) || String(err);
 
-    /* A link cut short fails verification too, because the bytes changed.
-       For a long link that is much the likelier cause, so say so first --
-       the alternative reading is alarming and usually wrong. */
-    var nearLimit = payload.length >= BUDGET-200;
     if(m === 'BADSIG'){
-      if(nearLimit){
-        fatal('This link looks cut short',
-          'It is '+fmtNum(payload.length)+' characters, right at the limit this site allows, and the '+
-          'signature does not match \u2014 which is what a truncated link looks like. Something along '+
-          'the way probably shortened it: a chat app, a notes field, or the bookmark itself. Build it '+
-          'again from a smaller app. Nothing in it has been run.');
-      }else{
-        fatal('Refused: this link is not signed by your key',
-          'This site only runs apps signed with your own private key. This link was not \u2014 it was '+
-          'built on someone else\u2019s site, altered after it was made, or aimed at your saved data. '+
-          'Nothing in it has been run.');
-      }
+      fatal('This link did not verify',
+        'This site only runs apps signed with your own private key, and the signature on this link '+
+        'does not match. Either it was built somewhere else, or it was altered or cut short on the '+
+        'way here. If you made it yourself, open the compiler and build it again. Nothing in it '+
+        'has run.');
       return;
     }
     if(m === 'UNCONFIGURED'){
@@ -470,9 +452,7 @@ function runApp(payload){
         'create a key, and follow the setup steps in the README.');
       return;
     }
-    fatal('Could not open this link',
-      m + (nearLimit ? ' The link is '+fmtNum(payload.length)+' characters, right at the limit \u2014 '+
-                       'it was probably cut short when it was saved or shared.' : ''));
+    fatal('Could not open this link', m);
   });
 }
 
@@ -526,7 +506,6 @@ function compilerHTML(){
     '<div class="card">'+
       '<h2>3 &middot; Size and warnings</h2>'+
       '<div class="meter">'+
-        '<div class="bar" id="bar"><i style="width:0"></i></div>'+
         '<div class="nums" id="nums"><span>Paste an app above and its size shows here.</span></div>'+
       '</div>'+
       '<div class="hint" id="fitHint"></div>'+
@@ -565,12 +544,12 @@ function compilerHTML(){
       'request, so the server that hands you this page never learns which app you opened. '+
       'This page checks the signature, then runs the app in place of itself.</p>'+
       '<ul>'+
-        '<li><b>Budget: '+fmtNum(BUDGET)+' URL characters.</b> No browser documents a limit on URL '+
-          'length and Safari publishes none, so this ceiling is a conservative guess rather than a '+
-          'measured one. It leaves about 48\u00a0KB for the gzipped app; the HTML files in this repo '+
-          'compressed 2.4&ndash;3.5&times;, which puts the ceiling somewhere near 140&ndash;170\u00a0KB '+
-          'of HTML. The meter above measures your file exactly. A single base64 image is usually over '+
-          'the limit on its own.</li>'+
+        '<li><b>Size.</b> The app travels inside the link, so a bigger app means a longer URL. '+
+          'Nothing here caps it, because no browser documents a limit on URL length, and how much of '+
+          'a URL iOS keeps in a home-screen bookmark is undocumented as well. The longest link tested '+
+          'on an iPhone is about 21,000 characters. A link that does get cut short stops matching its '+
+          'signature, so the app refuses to open rather than running half of itself. Inline base64 '+
+          'images are what usually make a link very long.</li>'+
         '<li><b>Needs <code>CompressionStream</code></b> \u2014 Safari 16.4, Firefox 113, Chrome 80 '+
           'or later.</li>'+
         '<li><b>Offline.</b> The app itself is in the link and needs no network. The engine that '+
@@ -594,30 +573,17 @@ function compilerHTML(){
 }
 
 function renderMeter(){
-  var bar=$('bar'), fill=bar.firstChild, nums=$('nums'), hint=$('fitHint');
+  var nums=$('nums'), hint=$('fitHint');
   if(!state.url){
-    bar.className='bar'; fill.style.width='0';
     nums.innerHTML='<span>Paste something to measure it.</span>';
     hint.textContent='';
     return;
   }
-  var chars=state.url.length, pct=Math.min(100, chars/BUDGET*100);
-  bar.className='bar'+(pct>100?' bad':pct>80?' warn':'');
-  fill.style.width=Math.max(1.5,pct)+'%';
   nums.innerHTML=
     '<span>HTML <b>'+fmtBytes(state.raw)+'</b></span>'+
     '<span>gzipped <b>'+fmtBytes(state.gz)+'</b></span>'+
-    '<span>URL <b>'+fmtNum(chars)+'</b> chars</span>'+
-    '<span><b>'+pct.toFixed(1)+'%</b> of budget</span>';
-  if(chars>BUDGET){
-    hint.innerHTML='<b style="color:var(--bad)">Over budget by '+fmtNum(chars-BUDGET)+' characters.</b> '+
-      'Safari may cut this link short, and it would then break after you bookmark it. '+
-      'Remove any embedded images or large blocks of data, or host this one as a normal web page.';
-  }else if(pct>80){
-    hint.textContent='Close to the limit. It will work, but there is not much room to add to the app later.';
-  }else{
-    hint.textContent='Plenty of room.';
-  }
+    '<span>URL <b>'+fmtNum(state.url.length)+'</b> characters</span>';
+  hint.textContent='';
 }
 
 function renderChecks(html){
@@ -725,7 +691,7 @@ function recompute(){
       state.url=baseUrl()+'#'+VERSION+'-'+'x'.repeat(86)+'.'+toB64url(bytes);  /* size estimate only */
       state.payload=null;
       renderMeter(); setActions(false);
-      $('fitHint').textContent='Size only \u2014 import your signing key to publish.';
+      $('fitHint').textContent='Size only. Import your signing key to publish.';
     });
     return;
   }
@@ -737,7 +703,7 @@ function recompute(){
     state.gz=Math.round(payload.length*3/4);
     state.meta=meta;
     renderMeter();
-    setActions(state.url.length<=BUDGET);
+    setActions(true);
   }).catch(function(e){
     state={payload:null,url:null,raw:raw,gz:0};
     renderMeter(); setActions(false);
@@ -800,7 +766,7 @@ function renderKeyStatus(){
       box.innerHTML=row('\u2713','ok','Ready to publish',
         'Apps you publish are signed on this device and will run on your site. Nothing else will.');
     }
-    setActions(!!state.url && state.url.length<=BUDGET);
+    setActions(!!state.url);
   }).catch(function(){
     keyReady=false; clearPanel();
     box.innerHTML=row('!','warn','Stored key is unreadable',

@@ -195,6 +195,30 @@ head('1b. Forgery and tampering');
   await expectBadSig('verifies before decompressing', '2-' + sig + '.' + ctx.toB64url(
     new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])));
 
+  /* There is no size cap anywhere in the engine, so check that the codec and
+     the signature hold up well past anything tried on a phone. The filler is
+     deterministic pseudo-random text rather than repeated characters, since
+     gzip crushes a megabyte of one letter down to about 1.5 KB and would
+     prove nothing about length. */
+  {
+    let seed = 12345;
+    let filler = '';
+    while (filler.length < 500000) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      filler += seed.toString(36);
+    }
+    const big = '<!doctype html><title>Big</title><body><p>' + filler + '</p>';
+    const p = await sign({ v: 1, title: 'Big', slug: 'big', html: big, claudeShim: false });
+    const back = await ctx.decodeVerified(p);
+    ok('a 500 KB app round-trips byte for byte', back.html === big,
+       back.html.length + ' vs ' + big.length);
+    ok('its payload is far past any tested link length', p.length > 300000, p.length);
+    console.log('       ' + (big.length / 1024).toFixed(0) + ' KB of hard-to-compress HTML -> ' +
+                p.length + ' payload characters');
+    await expectBadSig('a 500 KB app is still rejected if tampered with',
+                       p.slice(0, -40) + flip(p.slice(-40), 5));
+  }
+
   /* replaying the author's own payload is fine -- it is just their app */
   const replayed = await ctx.decodeVerified(good);
   eq('replay of own payload is allowed', replayed.html, APP.html);
@@ -565,7 +589,7 @@ head("4d. Errors that are not the app's fault");
   eq('resource failure with no URL is not reported as an app error', notesIn(bare), 0);
 }
 
-/* ============ 5. real artifacts: fidelity, budget, analysis ============ */
+/* ============ 5. real artifacts: fidelity and analysis ============ */
 head('4e. analyze() tells scripts apart from stylesheets');
 {
   const fonts = ctx.analyze('<link href="https://fonts.googleapis.com/css2?family=X" rel="stylesheet">');
@@ -582,9 +606,8 @@ head('4e. analyze() tells scripts apart from stylesheets');
   eq('a self-contained app has no external scripts', plain.extScripts.length, 0);
 }
 
-head('5. Real artifacts -- byte fidelity, budget, analysis');
+head('5. Real artifacts -- byte fidelity and analysis');
 {
-  const BUDGET = 64000;
   const files = process.argv.slice(2);
   const dir = path.join(root, 'samples');
   if (fs.existsSync(dir)) {
@@ -610,12 +633,9 @@ head('5. Real artifacts -- byte fidelity, budget, analysis');
     eq(name + ' -- title survives', back.title, title);
 
     const urlLen = 'https://example.github.io/sideload/'.length + 1 + payload.length;
-    const pct = urlLen / BUDGET * 100;
     const raw = Buffer.byteLength(body, 'utf8');
-    console.log('       ' + (raw / 1024).toFixed(1) + ' KB raw -> ' + payload.length +
-                ' payload chars -> ~' + urlLen + ' URL chars (' + pct.toFixed(1) +
-                '% of budget), slug "' + slug + '"');
-    ok(name + ' -- fits the budget', urlLen <= BUDGET, urlLen + ' > ' + BUDGET);
+    console.log('       ' + (raw / 1024).toFixed(1) + ' KB raw -> ~' + urlLen +
+                ' URL characters, slug "' + slug + '"');
 
     const a = ctx.analyze(body);
     if (a.hosts.length) console.log('       external hosts: ' + a.hosts.join(', '));
